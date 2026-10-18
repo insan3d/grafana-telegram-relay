@@ -1,0 +1,187 @@
+minimum_prek_version: 0.5.5
+
+default_install_hook_types:
+  - pre-commit
+  - pre-push
+
+default_stages:
+  - pre-commit
+
+repos:
+  - repo: builtin
+    hooks:
+      - id: check-case-conflict
+        priority: 10
+
+      - id: check-executables-have-shebangs
+        priority: 10
+
+      - id: check-shebang-scripts-are-executable
+        priority: 10
+
+      - id: check-merge-conflict
+        priority: 10
+
+      - id: check-symlinks
+        priority: 10
+
+      - id: destroyed-symlinks
+        priority: 10
+
+      - id: detect-private-key
+        priority: 10
+
+      - id: end-of-file-fixer
+        priority: 1
+
+      - id: fix-byte-order-marker
+        priority: 0
+
+      - id: trailing-whitespace
+        priority: 2
+
+      - id: check-json
+        priority: 10
+
+      - id: check-toml
+        priority: 10
+
+      - id: check-yaml
+        priority: 10
+
+      - id: check-added-large-files
+        priority: 10
+        args:
+          - --maxkb=1024
+
+      - id: pretty-format-json
+        priority: 10
+        args:
+          - --no-sort-keys
+          - --no-ensure-ascii
+          - --indent=2
+
+      - id: mixed-line-ending
+        priority: 10
+        args:
+          - --fix=no
+
+  - repo: local
+    hooks:
+      - id: uv-lock
+        name: uv lock
+        language: system
+        entry: uv lock --check
+        always_run: true
+        pass_filenames: false
+        priority: 10
+
+      - id: ruff
+        name: Ruff ALL
+        language: system
+        entry: uv run --locked ruff check
+        priority: 10
+        types:
+          - python
+
+      - id: ruff-format
+        name: Ruff format
+        language: system
+        entry: uv run --locked ruff format --check
+        priority: 10
+        types:
+          - python
+
+      - id: mypy
+        name: mypy strict
+        language: system
+        entry: uv run --locked mypy
+        always_run: true
+        pass_filenames: false
+        priority: 10
+
+      - id: deptry
+        name: Dependency imports
+        language: system
+        entry: uv run --locked deptry .
+        always_run: true
+        pass_filenames: false
+        priority: 10
+
+      - id: validate-pyproject
+        name: Python package metadata
+        language: system
+        entry: uv run --locked validate-pyproject
+        files: ^pyproject\.toml$
+        priority: 10
+
+      - id: taplo-check
+        name: TOML validation
+        language: system
+        entry: uv run --locked taplo check
+        priority: 10
+        types:
+          - toml
+
+      - id: taplo-format
+        name: TOML format
+        language: system
+        entry: uv run --locked taplo fmt --check
+        priority: 10
+        types:
+          - toml
+
+      - id: yamllint
+        name: YAML lint
+        language: system
+        entry: uv run --locked yamllint --strict
+        priority: 10
+        types:
+          - yaml
+
+      - id: hadolint
+        name: Dockerfile lint
+        language: system
+        entry: uv run --locked hadolint --failure-threshold style
+        priority: 10
+        types:
+          - dockerfile
+
+      - id: rumdl
+        name: Markdown ALL
+        language: system
+        entry: uv run --locked rumdl check --deny-config-warnings --fail-on any
+        priority: 10
+        types:
+          - markdown
+
+      - id: shellcheck
+        name: Shell lint
+        language: system
+        entry: uv run --locked shellcheck --severity=style --enable=all
+        priority: 10
+        types:
+          - shell
+
+      - id: detect-secrets
+        name: Detect embedded secrets
+        language: system
+        entry: uv run --locked detect-secrets-hook
+        exclude: ^(uv\.lock|LICENSE)$
+        priority: 10
+
+      - id: pytest
+        name: Offline tests
+        language: system
+        entry: uv run --locked pytest -q
+        always_run: true
+        pass_filenames: false
+        priority: 20
+        stages:
+          - pre-push
+
+  - repo: https://github.com/checkmake/checkmake
+    rev: v0.3.2
+    hooks:
+      - id: checkmake
+        priority: 10

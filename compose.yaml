@@ -1,0 +1,40 @@
+name: grafana-telegram-relay
+
+services:
+  relay:
+    image: grafana-telegram-relay:local
+    build: .
+
+    restart: unless-stopped
+
+    environment:
+      BOT_TOKEN_FILE: /run/secrets/bot_token
+      CHAT_ID_FILE: /run/secrets/chat_id
+      GRAFANA_TOKEN_FILE: /run/secrets/grafana_token
+      GRAFANA_URL: ${GRAFANA_URL:?Set GRAFANA_URL to the address reachable from this container}
+      CANARY_TIMEOUT_SECONDS: "180"
+      RETENTION_PERIOD: 30d
+
+    secrets:
+      - bot_token
+      - chat_id
+      - grafana_token
+
+    volumes:
+      - relay_data:/data
+
+    ports:
+      - 127.0.0.1:8088:8080
+
+secrets:
+  bot_token:
+    file: .secrets/bot-token
+
+  chat_id:
+    file: .secrets/chat-id
+
+  grafana_token:
+    file: .secrets/grafana-token
+
+volumes:
+  relay_data: {}

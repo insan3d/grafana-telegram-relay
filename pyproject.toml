@@ -1,0 +1,162 @@
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14"]
+build-backend = "uv_build"
+
+[project]
+name = "grafana-telegram-relay"
+version = "0.1.0"
+description = "Persistent Grafana alert notifications with screenshots and acknowledgements in Telegram"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Alexander Pozlevich" }]
+keywords = ["grafana", "telegram", "alerting", "monitoring", "observability"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: No Input/Output (Daemon)",
+  "Framework :: AsyncIO",
+  "Intended Audience :: System Administrators",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.15",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Communications :: Chat",
+  "Topic :: System :: Monitoring",
+  "Typing :: Typed",
+]
+requires-python = ">=3.15,<3.16"
+dependencies = [
+  "aiohttp>=3.13,<4",
+  "aiosqlite>=0.21,<1",
+  "humanfriendly>=10,<11",
+  "jinja2>=3.1.6,<4",
+  "prometheus-client>=0.23,<1",
+  "pydantic>=2.14,<3",
+  "pydantic-settings>=2,<3",
+  "python-telegram-bot>=22.8,<23",
+  "yarl>=1.23,<2",
+]
+
+[project.scripts]
+grafana-telegram-relay = "grafana_telegram_relay.app:main"
+
+[project.urls]
+Repository = "https://github.com/insan3d/grafana-telegram-relay"
+Documentation = "https://github.com/insan3d/grafana-telegram-relay#readme"
+Issues = "https://github.com/insan3d/grafana-telegram-relay/issues"
+"Docker image" = "https://hub.docker.com/r/apozlevich/grafana-telegram-relay"
+
+[dependency-groups]
+dev = [
+  "deptry>=0.25,<1",
+  "detect-secrets>=1.5,<2",
+  "hadolint-py>=2.15.1.2,<3",
+  "mypy>=2.4,<3",
+  "prek>=0.5.5,<1",
+  "pytest>=8,<10",
+  "pytest-cov>=7,<8",
+  "ruff>=0.14,<1",
+  "rumdl>=0.3,<0.4",
+  "shellcheck-py>=0.11,<1",
+  "taplo>=0.9.3,<1",
+  "twine>=6,<7",
+  "types-humanfriendly>=10,<11",
+  "validate-pyproject[all,store]>=0.26,<1",
+  "yamllint>=1.38,<2",
+]
+
+[tool.uv.build-backend]
+source-include = [
+  "README.ru.md",
+  "AGENTS.md",
+  "Makefile",
+  "Dockerfile",
+  "compose.yaml",
+  "dashboards/**",
+  "examples/**",
+  "tests/**",
+  "uv.lock",
+  ".dockerignore",
+  ".editorconfig",
+  ".gitignore",
+  ".pre-commit-config.yaml",
+  ".hadolint.yaml",
+  ".taplo.toml",
+  ".yamllint.yaml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py315"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["ALL"]
+extend-select = ["D213"] # Keep multiline summaries below the opening quotes.
+ignore = [
+  "COM812", # Let the formatter manage trailing commas.
+  "CPY001", # No mandatory copyright headers.
+  "D202",   # Leave a blank line after function docstrings.
+  "D212",   # Start multiline docstring text after opening quotes.
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "PLR2004", # Allow literal expected values.
+  "S101",    # Allow assert in tests.
+]
+
+[tool.mypy]
+plugins = ["pydantic.mypy"]
+python_version = "3.15"
+files = ["src", "tests"]
+strict = true
+disallow_any_explicit = true
+disallow_any_unimported = true
+warn_unreachable = true
+enable_error_code = [
+  "deprecated",                # Flag deprecated APIs.
+  "exhaustive-match",          # Require exhaustive match cases.
+  "explicit-any",              # Reject explicit Any.
+  "explicit-override",         # Require @override.
+  "ignore-without-code",       # Require specific ignore codes.
+  "mutable-override",          # Reject unsafe mutable overrides.
+  "narrowed-type-not-subtype", # Validate type guard narrowing.
+  "overload-overlap",          # Reject incompatible overlapping overloads.
+  "possibly-undefined",        # Catch potentially unbound variables.
+  "redundant-expr",            # Flag redundant conditions.
+  "truthy-bool",               # Require meaningful truth checks.
+  "truthy-iterable",           # Require sized iterable truth checks.
+  "unreachable",               # Flag unreachable code.
+  "unused-awaitable",          # Catch missing await.
+  "unused-ignore",             # Reject unused ignores.
+]
+
+[tool.pydantic-mypy]
+init_typed = true
+init_forbid_extra = true
+warn_required_dynamic_aliases = true
+
+[tool.rumdl]
+enable = ["ALL"]
+line-length = 120
+flavor = "gfm"
+
+[tool.rumdl.MD013]
+line-length = 120
+strict = true
+reflow = true
+
+[tool.rumdl.MD060]
+style = "compact"
+aligned-delimiter = false
+
+[tool.rumdl.MD063]
+style = "sentence-case"
+sentence-case-restart-after = ["."]
+ignore-words = ["grafana-telegram-relay", "Grafana", "Telegram", "HTTP", "API", "ACK"]

@@ -1,0 +1,51 @@
+extends: default
+
+rules:
+  key-ordering: disable
+  document-start: disable
+  document-end: disable
+
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: true
+
+  line-length:
+    max: 120
+    allow-non-breakable-words: false
+    allow-non-breakable-inline-mappings: false
+
+  empty-lines:
+    max: 1
+
+  quoted-strings:
+    quote-type: double
+    required: only-when-needed
+
+  truthy:
+    allowed-values:
+      - "true"
+      - "false"
+
+  float-values:
+    require-numeral-before-decimal: true
+    forbid-scientific-notation: true
+    forbid-inf: true
+    forbid-nan: true
+
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+
+  key-duplicates:
+    forbid-duplicated-merge-keys: true
+
+  anchors:
+    forbid-duplicated-anchors: true
+    forbid-undeclared-aliases: true
+    forbid-unused-anchors: true
+
+  empty-values:
+    forbid-in-block-mappings: true
+    forbid-in-block-sequences: true
+    forbid-in-flow-mappings: true

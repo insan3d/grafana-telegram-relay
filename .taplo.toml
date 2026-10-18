@@ -1,0 +1,13 @@
+include = ["**/*.toml"]
+exclude = [".venv/**", "dist/**", "build/**"]
+
+[formatting]
+column_width = 120
+indent_string = "  "
+array_auto_collapse = false
+
+[[rule]]
+include = [".taplo.toml"]
+
+[rule.schema]
+path = "taplo://taplo.toml"

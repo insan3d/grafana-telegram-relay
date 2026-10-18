@@ -1,0 +1,18 @@
+{{ '🔴 FIRING' if status == 'firing' else '🟢 RESOLVED' }} · {{ labels.alertname }}
+{% if annotations.get('summary') %}
+{{ annotations.summary }}
+{% endif %}
+{% if annotations.get('description') %}
+{{ annotations.description }}
+{% endif %}
+{% for key, value in labels|dictsort if key not in ('alertname', 'grafana_folder') %}
+{{ key }}: {{ value }}
+{% endfor %}
+
+Started: {{ starts_at }}
+{% if status == 'resolved' %}
+Resolved: {{ ends_at }}
+{% endif %}
+{% if values %}
+Values: {{ values|tojson }}
+{% endif %}

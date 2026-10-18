@@ -1,0 +1,15 @@
+{{ '🔴' if status == 'firing' else '🟢' }} <b>{{ labels.alertname }}</b> · {{ status|upper }}
+{% if annotations.get('summary') %}
+{{ annotations.summary }}
+{% endif %}
+{% if labels.get('instance') %}
+Instance: <code>{{ labels.instance }}</code>
+{% endif %}
+{% if status == 'resolved' %}
+Duration: {{ (duration_seconds / 60)|round(1) }} min
+{% endif %}
+{% if panel_url %}
+<a href="{{ panel_url }}">Panel</a>
+{% elif dashboard_url %}
+<a href="{{ dashboard_url }}">Dashboard</a>
+{% endif %}

@@ -1,0 +1,17 @@
+failure-threshold: style
+disable-ignore-pragma: true
+strict-labels: true
+
+trustedRegistries:
+  - docker.io
+  - ghcr.io
+
+label-schema:
+  org.opencontainers.image.title: text
+  org.opencontainers.image.description: text
+  org.opencontainers.image.version: semver
+  org.opencontainers.image.authors: text
+  org.opencontainers.image.licenses: spdx
+  org.opencontainers.image.source: url
+  org.opencontainers.image.documentation: url
+  org.opencontainers.image.url: url

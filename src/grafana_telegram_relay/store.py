@@ -134,6 +134,10 @@ class Store:
                 ack_user_id INTEGER NOT NULL, ack_name TEXT NOT NULL,
                 ack_at REAL NOT NULL, ack_version INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS resolution_replies (
+                incident_key TEXT PRIMARY KEY REFERENCES incidents(key) ON DELETE CASCADE,
+                message_id INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS telegram_updates (
                 id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL DEFAULT 0
             );
@@ -253,8 +257,10 @@ class Store:
         async with (
             self.lock,
             self.db.execute(
-                "SELECT incidents.*,ack_user_id,ack_name,ack_at,ack_version FROM incidents "
+                "SELECT incidents.*,ack_user_id,ack_name,ack_at,ack_version, "
+                "resolution_replies.message_id AS resolution_message_id FROM incidents "
                 "LEFT JOIN acknowledgements ON acknowledgements.incident_key=incidents.key "
+                "LEFT JOIN resolution_replies ON resolution_replies.incident_key=incidents.key "
                 "WHERE delivered < version AND next_attempt <= ? "
                 "AND (SELECT pause_until FROM delivery WHERE id=1) <= ? "
                 "ORDER BY next_attempt,updated LIMIT 1",
@@ -272,6 +278,7 @@ class Store:
             raise TypeError(msg)
 
         message_id = _value(row, "message_id")
+        resolution_message_id = _value(row, "resolution_message_id")
 
         return {
             "key": TEXT.validate_python(_value(row, "key")),
@@ -279,6 +286,7 @@ class Store:
             "version": _integer(_value(row, "version")),
             "delivered": _integer(_value(row, "delivered")),
             "message_id": _integer(message_id) if message_id is not None else None,
+            "resolution_message_id": _integer(resolution_message_id) if resolution_message_id is not None else None,
             "photo": _integer(_value(row, "photo")),
             "attempts": _integer(_value(row, "attempts")),
             "next_attempt": _number(_value(row, "next_attempt")),
@@ -347,6 +355,40 @@ class Store:
 
         async with self.lock:
             await self.db.execute("UPDATE telegram_updates SET offset=max(offset,?) WHERE id=1", (offset,))
+            await self.db.commit()
+
+    async def save_message(self, row: Incident, message_id: int, *, photo: bool) -> None:
+        """
+        Preserve a replacement incident message while its recovery reply is pending.
+
+        Args:
+            row: Snapshot whose incident message was replaced.
+            message_id: Telegram identifier of the replacement message.
+            photo: Whether the replacement contains a screenshot.
+        """
+
+        async with self.lock:
+            await self.db.execute(
+                "UPDATE incidents SET message_id=?,photo=? WHERE key=?",
+                (message_id, int(photo), row["key"]),
+            )
+            await self.db.commit()
+
+    async def resolution_sent(self, row: Incident, message_id: int) -> None:
+        """
+        Persist a confirmed recovery reply independently of incident completion.
+
+        Args:
+            row: Resolved incident snapshot.
+            message_id: Telegram identifier returned for the recovery reply.
+        """
+
+        async with self.lock:
+            await self.db.execute(
+                "INSERT INTO resolution_replies(incident_key,message_id) VALUES(?,?) "
+                "ON CONFLICT(incident_key) DO NOTHING",
+                (row["key"], message_id),
+            )
             await self.db.commit()
 
     async def sent(self, row: Incident, message_id: int, *, photo: bool) -> None:

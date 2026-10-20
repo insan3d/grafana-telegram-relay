@@ -161,6 +161,7 @@ class Incident(TypedDict):
     version: int
     delivered: int
     message_id: int | None
+    resolution_message_id: int | None
     photo: int
     attempts: int
     next_attempt: float

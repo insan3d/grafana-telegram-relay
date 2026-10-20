@@ -103,8 +103,8 @@ class ButtonTests(unittest.IsolatedAsyncioTestCase):
 
         await self.store.ingest([alert(starts_at="2026-10-17T13:00:00Z")], now=1006)
         await self.delivery.once(now=1006)
-        assert "Acknowledged by" not in self.telegram.messages[2]["text"]
-        markup = self.telegram.messages[2]["reply_markup"]
+        assert "Acknowledged by" not in self.telegram.messages[3]["text"]
+        markup = self.telegram.messages[3]["reply_markup"]
         assert isinstance(markup, InlineKeyboardMarkup)
         assert markup.inline_keyboard[0][0].text == "Acknowledge"
 

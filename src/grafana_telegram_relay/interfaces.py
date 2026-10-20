@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 lazy from collections.abc import Sequence
 
-lazy from telegram import InlineKeyboardMarkup, InputMediaPhoto, Update
+lazy from telegram import InlineKeyboardMarkup, InputMediaPhoto, ReplyParameters, Update
 
 from .models import Alert
 
@@ -28,10 +28,16 @@ class MessageReference(Protocol):
 
 
 class TelegramClient(Protocol):
-    """Define the Telegram operations required for one-message incidents."""
+    """Define the Telegram operations for incident messages and recovery replies."""
 
     async def send_message(
-        self, *, chat_id: ChatId, text: str, parse_mode: str | None, reply_markup: InlineKeyboardMarkup | None
+        self,
+        *,
+        chat_id: ChatId,
+        text: str,
+        parse_mode: str | None,
+        reply_markup: InlineKeyboardMarkup | None,
+        reply_parameters: ReplyParameters | None = None,
     ) -> MessageReference:
         """
         Send text and return the created message identifier.
@@ -41,6 +47,7 @@ class TelegramClient(Protocol):
             text: Formatted incident details.
             parse_mode: Telegram formatting mode, or None for plain text.
             reply_markup: Shared incident action buttons.
+            reply_parameters: Optional reference to the original incident message.
 
         Returns:
             Reference to the newly created message.

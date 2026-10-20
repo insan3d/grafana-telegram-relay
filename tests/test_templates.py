@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import override
 from unittest.mock import patch
 
+import pytest
 from prometheus_client import REGISTRY
 
 from grafana_telegram_relay.messages import MessageTemplates
@@ -60,9 +61,9 @@ class TemplateTests(unittest.TestCase):
         firing = self.templates(self.item())
         assert "FIRING" in firing.text
         assert "GrafanaTest" in firing.text
-        assert "instance: grafana" in firing.text
+        assert "instance: <code>grafana</code>" in firing.text
         assert "Test incident" in firing.text
-        assert firing.parse_mode is None
+        assert firing.parse_mode == "HTML"
         resolved = self.templates(self.item(status="resolved"))
         assert "RESOLVED" in resolved.text
         assert "Resolved:" in resolved.text
@@ -88,7 +89,7 @@ class TemplateTests(unittest.TestCase):
     def test_broken_packaged_default_cannot_prevent_startup_or_delivery(self) -> None:
         """Verify broken packaged default cannot prevent startup or delivery."""
 
-        self.write("default.txt.j2", "{% if syntax_error %}")
+        self.write("default.html.j2", "{% if syntax_error %}")
 
         with patch("grafana_telegram_relay.messages.BUILTIN_DIRECTORY", self.root):
             formatter = MessageTemplates(self.root)
@@ -189,3 +190,53 @@ class TemplateTests(unittest.TestCase):
         self.write("links.txt.j2", "{{ fingerprint }} {{ generator_url }} {{ silence_url }}")
         item.annotations["telegram_template"] = "links.txt.j2"
         assert self.templates(item).text == "grafana-test https://grafana.example/rule https://grafana.example/silence"
+
+
+def test_default_separates_summary_description_and_escaped_technical_details() -> None:
+    """Deliver readable sections while treating annotation and label markup as data."""
+
+    item = alert("resolved")
+    item.labels["instance"] = "tempo <primary> & replica"
+    item.annotations["summary"] = "Discarded <spans>"
+    item.annotations["description"] = "Inspect cardinality & generator capacity."
+    result = MessageTemplates()(item)
+
+    assert result.parse_mode == "HTML"
+    assert "<b>🟢 RESOLVED · GrafanaTest</b>\n\n<b>Discarded &lt;spans&gt;</b>" in result.text
+    assert "</b>\n\nInspect cardinality &amp; generator capacity.\n\ninstance:" in result.text
+    assert "instance: <code>tempo &lt;primary&gt; &amp; replica</code>" in result.text
+    assert "Started: <code>2026-10-17T12:00:00+00:00</code>" in result.text
+    assert "Resolved: <code>2026-10-17T12:10:00+00:00</code>" in result.text
+    assert 'Values:\n<pre>{"A": 1}</pre>' in result.text
+    assert "Discarded <spans>\n\nInspect cardinality & generator capacity." in result.plain
+
+
+@pytest.mark.parametrize("template", ["default.html.j2", "compact.html.j2", "default.txt.j2", "missing.html.j2"])
+@pytest.mark.parametrize("status", ["firing", "resolved"])
+def test_builtin_templates_keep_mentions_outside_technical_details(template: str, status: AlertStatus) -> None:
+    """Expose usernames as ordinary text once, including template-error fallback."""
+
+    item = alert(status)
+    item.labels["mention"] = "@alice @bob"
+    item.annotations["telegram_template"] = template
+    result = MessageTemplates()(item)
+
+    assert result.text.splitlines()[1] == "@alice @bob"
+    assert result.plain.count("@alice @bob") == 1
+    assert "mention:" not in result.plain
+
+
+def test_default_escapes_mentions_and_preserves_them_when_caption_is_clipped() -> None:
+    """Keep mention text near the title without allowing HTML injection."""
+
+    item = alert()
+    item.labels["mention"] = "@alice <b>@bob</b>"
+    item.annotations["description"] = "Long description. " * 100
+    templates = MessageTemplates()
+    full = templates(item)
+    caption = templates(item, limit=1024)
+
+    assert full.text.splitlines()[1] == "@alice &lt;b&gt;@bob&lt;/b&gt;"
+    assert caption.parse_mode is None
+    assert caption.text.splitlines()[1] == "@alice <b>@bob</b>"
+    assert len(caption.text.encode("utf-16-le")) // 2 <= 1024

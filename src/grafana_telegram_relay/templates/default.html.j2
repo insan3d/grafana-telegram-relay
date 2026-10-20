@@ -1,0 +1,28 @@
+<b>{{ '🔴 FIRING' if status == 'firing' else '🟢 RESOLVED' }} · {{ labels.alertname }}</b>
+{% if labels.get('mention') %}
+{{ labels.mention }}
+{% endif %}
+{% if annotations.get('summary') %}
+
+<b>{{ annotations.summary }}</b>
+{% endif %}
+{% if annotations.get('description') %}
+
+{{ annotations.description }}
+{% endif %}
+{% for key, value in labels|dictsort if key not in ('alertname', 'grafana_folder', 'mention') %}
+{% if loop.first %}
+
+{% endif %}
+{{ key }}: <code>{{ value }}</code>
+{% endfor %}
+
+Started: <code>{{ starts_at }}</code>
+{% if status == 'resolved' %}
+Resolved: <code>{{ ends_at }}</code>
+{% endif %}
+{% if values %}
+
+Values:
+<pre>{{ values|tojson }}</pre>
+{% endif %}

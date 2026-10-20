@@ -6,8 +6,9 @@
 [Docker Hub](https://hub.docker.com/r/apozlevich/grafana-telegram-relay)
 
 Grafana alert notifications in Telegram with one persistent message per alert incident. Firing updates, acknowledgements
-and recovery edit that message; a new firing episode creates a new one. SQLite preserves the delivery queue, Telegram
-message IDs, acknowledgements, polling offset and canary state across restarts.
+and recovery edit that message; recovery also sends a brief reply with mentions. A new firing episode creates a new
+incident message. SQLite preserves the delivery queue, Telegram message IDs, recovery replies, acknowledgements, polling
+offset and canary state across restarts.
 
 Python 3.15, aiohttp, an asynchronous Telegram API client and sandboxed Jinja2 templates. The wheel includes the default
 templates. The Alpine runtime image contains the installed wheel and its dependencies in a virtual environment; uv is
@@ -131,8 +132,11 @@ disappears. The first acknowledger is retained through updates, recovery and res
 curl --fail http://127.0.0.1:8088/metrics
 ```
 
-The original message becomes resolved. Use a new `started_at` for the next incident. Set `RELAY_URL` when testing
-another relay address. This minimal example has no panel association and is sent as text.
+The original message becomes resolved, and the relay sends a short `🟢 Решено` reply with the rule's `mention` label,
+without screenshots, descriptions or buttons. Repeated webhooks do not send another reply; failed replies remain queued
+across restarts. If the first delivered notification is already resolved, only the full incident message is sent.
+Use a new `started_at` for the next incident. Set `RELAY_URL` when testing another relay address. This minimal example
+has no panel association and is sent as text.
 
 ACK occupies a separate full-width keyboard row. Available links appear below it: **Runbook** from the `runbook_url`
 annotation, **Grafana** from `dashboardURL` or the dashboard behind `panelURL`, and **Silence** from `silenceURL`.
@@ -149,7 +153,7 @@ uses `127.0.0.1` for those links. Configure Grafana's public URL for access from
 | `GRAFANA_URL` | Required: Grafana base URL reachable from the process |
 | `STATE_DB` | `/data/state.db`; directory must be writable |
 | `TEMPLATES_DIR` | `/etc/grafana-telegram-relay/templates`; optional template overrides |
-| `MESSAGE_TEMPLATE` | `default.txt.j2`; global template name |
+| `MESSAGE_TEMPLATE` | `default.html.j2`; global template name |
 | `CANARY_ENABLED` | `false`; enable canary heartbeats and watchdog |
 | `CANARY_TIMEOUT_SECONDS` | `180`; positive heartbeat timeout |
 | `RETENTION_PERIOD` | `30d`; positive duration parsed by humanfriendly, e.g. `12h`, `90m`, `1.5h` |
@@ -171,14 +175,29 @@ are retained for the configured period; active and pending incidents are not pru
 
 Run **one replica per bot token and database**. Telegram has no send idempotency key: a crash between sending and saving
 the message ID, or an ambiguous network timeout, can cause a duplicate. The canary monitors the Grafana notification
-chain; an external check is needed to detect failure of the relay, its host or Telegram itself.
+chain; an external check is needed to detect failure of the relay, its host or Telegram itself. The same send/commit
+limitation applies to recovery replies.
 
 ## Message templates
 
-Packaged [templates](src/grafana_telegram_relay/templates/) provide plain text and compact HTML. Mount your own
-directory at `/etc/grafana-telegram-relay/templates` to override or add templates. Files, includes and macros are reread
-on each changed alert; a file edit alone does not trigger delivery. Select a template globally with `MESSAGE_TEMPLATE`
-or per rule with annotation `telegram_template=compact.html.j2`.
+The default [template](src/grafana_telegram_relay/templates/default.html.j2) uses Telegram HTML with a bold title and
+summary, separate description and label sections, inline code for label values and timestamps, and a code block for
+query values.
+Packaged templates also include `compact.html.j2` and plain `default.txt.j2`. Mount your own directory at
+`/etc/grafana-telegram-relay/templates` to override or add templates. Files, includes and macros are reread on each
+changed alert; a file edit alone does not trigger delivery. Select a template globally with `MESSAGE_TEMPLATE` or per
+rule with annotation `telegram_template=compact.html.j2`.
+
+Add a `mention` label to a Grafana alert rule to tag Telegram users without a custom template:
+
+```yaml
+labels:
+  mention: "@alice @bob"
+```
+
+All built-in templates display this value once below the title, outside code formatting, for both firing and resolved
+alerts, including photo captions. Use usernames with `@`, separated by spaces. The label is omitted from the technical
+label list; HTML in its value is escaped. Custom templates can display it with `{{ labels.get('mention', '') }}`.
 
 ```jinja2
 {{ status|upper }} · {{ labels.alertname }}

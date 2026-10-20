@@ -1,8 +1,13 @@
 {{ '🔴' if status == 'firing' else '🟢' }} <b>{{ labels.alertname }}</b> · {{ status|upper }}
+{% if labels.get('mention') %}
+{{ labels.mention }}
+{% endif %}
 {% if annotations.get('summary') %}
-{{ annotations.summary }}
+
+<b>{{ annotations.summary }}</b>
 {% endif %}
 {% if labels.get('instance') %}
+
 Instance: <code>{{ labels.instance }}</code>
 {% endif %}
 {% if status == 'resolved' %}

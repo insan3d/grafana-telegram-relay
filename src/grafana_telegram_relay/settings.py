@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     grafana_url: HttpUrl = Field(validation_alias="GRAFANA_URL")
     state_db: Path = Field(default=Path("/data/state.db"), validation_alias="STATE_DB")
     templates_dir: Path = Field(default=Path("/etc/grafana-telegram-relay/templates"), validation_alias="TEMPLATES_DIR")
-    message_template: str = Field(default="default.txt.j2", min_length=1, validation_alias="MESSAGE_TEMPLATE")
+    message_template: str = Field(default="default.html.j2", min_length=1, validation_alias="MESSAGE_TEMPLATE")
     canary_enabled: bool = Field(default=False, validation_alias="CANARY_ENABLED")
     canary_timeout_seconds: PositiveInt = Field(default=180, validation_alias="CANARY_TIMEOUT_SECONDS")
     retention_period: Duration = Field(default=30 * 86400, validation_alias="RETENTION_PERIOD")

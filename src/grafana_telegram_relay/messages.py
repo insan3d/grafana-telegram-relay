@@ -55,18 +55,27 @@ def fallback_text(item: Alert) -> str:
 
     lines = [f"{'🔴 FIRING' if item.status == 'firing' else '🟢 RESOLVED'} · " + item.labels["alertname"]]
 
-    lines.extend(item.annotations[key] for key in ("summary", "description") if item.annotations.get(key))
+    if mention := item.labels.get("mention"):
+        lines.append(mention)
 
-    lines.extend(
-        f"{key}: {value}" for key, value in sorted(item.labels.items()) if key not in ("alertname", "grafana_folder")
+    lines.extend("\n" + item.annotations[key] for key in ("summary", "description") if item.annotations.get(key))
+
+    labels = "\n".join(
+        f"{key}: {value}"
+        for key, value in sorted(item.labels.items())
+        if key not in ("alertname", "grafana_folder", "mention")
     )
-    lines.append("Started: " + item.starts_at)
+
+    if labels:
+        lines.append("\n" + labels)
+
+    lines.append("\nStarted: " + item.starts_at)
 
     if item.status == "resolved":
         lines.append("Resolved: " + item.ends_at)
 
     if item.values:
-        lines.append("Values: " + json.dumps(item.values, ensure_ascii=False))
+        lines.append("\nValues: " + json.dumps(item.values, ensure_ascii=False))
 
     return "\n".join(lines)
 
@@ -117,7 +126,7 @@ class Message:
 class MessageTemplates:
     """Load message templates on demand and preserve delivery on author errors."""
 
-    def __init__(self, directory: str | Path | None = None, default: str = "default.txt.j2") -> None:
+    def __init__(self, directory: str | Path | None = None, default: str = "default.html.j2") -> None:
         """
         Initialize text and HTML environments with an optional override path.
 

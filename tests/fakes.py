@@ -8,7 +8,7 @@ lazy from collections.abc import Sequence
 
 from telegram import InlineKeyboardMarkup, InputFile, InputMediaPhoto
 from telegram.error import BadRequest, NetworkError, RetryAfter
-lazy from telegram import Bot, Update
+lazy from telegram import Bot, ReplyParameters, Update
 
 lazy from grafana_telegram_relay.interfaces import ChatId
 
@@ -30,6 +30,7 @@ class MessageRecord(TypedDict, total=False):
     photo: bytes | InputFile | str
     parse_mode: str | None
     reply_markup: InlineKeyboardMarkup | None
+    reply_parameters: ReplyParameters | None
 
 
 @dataclass(frozen=True)
@@ -48,17 +49,32 @@ class Telegram:
         self.messages: dict[int, MessageRecord] = {}
         self.next_id = 1
         self.fail = False
+        self.fail_replies = False
 
     async def send_message(
-        self, *, chat_id: ChatId, text: str, parse_mode: str | None, reply_markup: InlineKeyboardMarkup | None = None
+        self,
+        *,
+        chat_id: ChatId,
+        text: str,
+        parse_mode: str | None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_parameters: ReplyParameters | None = None,
     ) -> SentMessage:
         """Record text unless the simulated Telegram outage is enabled."""
 
-        if self.fail:
+        if self.fail or (reply_parameters is not None and self.fail_replies):
             msg = "unavailable"
             raise NetworkError(msg)
 
-        return self.send({"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "reply_markup": reply_markup})
+        return self.send(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": parse_mode,
+                "reply_markup": reply_markup,
+                "reply_parameters": reply_parameters,
+            }
+        )
 
     async def send_photo(
         self,
@@ -90,6 +106,16 @@ class Telegram:
 
         return SentMessage(message_id)
 
+    def message(self, message_id: int) -> MessageRecord:
+        """Find an editable message or reproduce Telegram's deleted-message response."""
+
+        try:
+            return self.messages[message_id]
+
+        except KeyError as error:
+            msg = "Message to edit not found"
+            raise BadRequest(msg) from error
+
     async def edit_message_text(
         self,
         *,
@@ -101,7 +127,7 @@ class Telegram:
     ) -> None:
         """Replace text in the selected recorded message."""
 
-        self.messages[message_id].update(
+        self.message(message_id).update(
             {"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "reply_markup": reply_markup}
         )
 
@@ -121,7 +147,7 @@ class Telegram:
         if not isinstance(photo, (bytes, InputFile, str)):
             raise TypeError(msg)
 
-        self.messages[message_id].update(
+        self.message(message_id).update(
             {"chat_id": chat_id, "caption": media.caption or "", "photo": photo, "reply_markup": reply_markup}
         )
 
@@ -136,7 +162,7 @@ class Telegram:
     ) -> None:
         """Replace the caption without discarding the recorded photo."""
 
-        self.messages[message_id].update(
+        self.message(message_id).update(
             {"chat_id": chat_id, "caption": caption, "parse_mode": parse_mode, "reply_markup": reply_markup}
         )
 

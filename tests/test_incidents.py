@@ -48,17 +48,38 @@ class IncidentTests(unittest.IsolatedAsyncioTestCase):
 
         metric = "telegram_bot_delivery_duration_seconds_count"
         before = REGISTRY.get_sample_value(metric, {"result": "success"}) or 0
-        await self.store.ingest([alert()], now=1000)
+        firing = alert()
+        firing.labels["mention"] = "@alice @bob"
+        resolved = alert("resolved")
+        resolved.labels["mention"] = "@alice @bob"
+
+        await self.store.ingest([firing], now=1000)
         await self.delivery.once(now=1000)
-        await self.store.ingest([alert()], now=1001)
+
+        assert self.telegram.messages[1]["parse_mode"] == "HTML"
+        assert self.telegram.messages[1]["text"].splitlines()[1] == "@alice @bob"
+
+        await self.store.ingest([firing], now=1001)
         assert not await self.delivery.once(now=1001)
-        await self.store.ingest([alert("resolved")], now=1002)
+
+        await self.store.ingest([resolved], now=1002)
         await self.delivery.once(now=1002)
-        assert len(self.telegram.messages) == 1
+
+        assert len(self.telegram.messages) == 2
         assert "RESOLVED" in self.telegram.messages[1]["text"]
+        assert self.telegram.messages[1]["parse_mode"] == "HTML"
+        assert self.telegram.messages[1]["text"].splitlines()[1] == "@alice @bob"
+        reply = self.telegram.messages[2]
+        assert reply["text"] == "🟢 Решено\n@alice @bob"
+        assert reply["parse_mode"] is None
+        assert reply["reply_markup"] is None
+        parameters = reply["reply_parameters"]
+        assert parameters is not None
+        assert parameters.message_id == 1
+
         await self.store.ingest([alert(starts_at="2026-10-17T13:00:00Z")], now=1003)
         await self.delivery.once(now=1003)
-        assert len(self.telegram.messages) == 2
+        assert len(self.telegram.messages) == 3
         after = REGISTRY.get_sample_value(metric, {"result": "success"})
         assert after is not None
         assert after - before == 3
@@ -91,7 +112,7 @@ class IncidentTests(unittest.IsolatedAsyncioTestCase):
         await self.delivery.once(now=1002)
         await self.store.ingest([alert()], now=1003)
         assert not await self.delivery.once(now=1003)
-        assert len(self.telegram.messages) == 1
+        assert len(self.telegram.messages) == 2
         assert "RESOLVED" in self.telegram.messages[1]["text"]
 
     async def test_delivery_failure_keeps_durable_work_and_retries(self) -> None:
@@ -173,13 +194,29 @@ class IncidentTests(unittest.IsolatedAsyncioTestCase):
             return b"PNG" if item.status == "firing" else None
 
         self.delivery.render = render
-        await self.store.ingest([alert()], now=1000)
+        firing = alert()
+        firing.labels["mention"] = "@alice @bob"
+        resolved = alert("resolved")
+        resolved.labels["mention"] = "@alice @bob"
+
+        await self.store.ingest([firing], now=1000)
         await self.delivery.once(now=1000)
+
         assert self.telegram.messages[1]["photo"] == b"PNG"
-        await self.store.ingest([alert("resolved")], now=1001)
+        assert self.telegram.messages[1]["parse_mode"] == "HTML"
+        assert self.telegram.messages[1]["caption"].splitlines()[1] == "@alice @bob"
+
+        await self.store.ingest([resolved], now=1001)
         await self.delivery.once(now=1001)
-        assert len(self.telegram.messages) == 1
+
+        assert len(self.telegram.messages) == 2
         assert "RESOLVED" in self.telegram.messages[1]["caption"]
+        assert self.telegram.messages[1]["parse_mode"] == "HTML"
+        assert self.telegram.messages[1]["caption"].splitlines()[1] == "@alice @bob"
+        assert self.telegram.messages[2]["text"] == "🟢 Решено\n@alice @bob"
+        parameters = self.telegram.messages[2]["reply_parameters"]
+        assert parameters is not None
+        assert parameters.message_id == 1
 
     async def test_custom_html_template_is_used_for_send_and_edit(self) -> None:
         """Verify custom html template is used for send and edit."""
@@ -197,8 +234,9 @@ class IncidentTests(unittest.IsolatedAsyncioTestCase):
         item.annotations["telegram_template"] = "custom.html.j2"
         await self.store.ingest([item], now=1001)
         await self.delivery.once(now=1001)
-        assert len(self.telegram.messages) == 1
+        assert len(self.telegram.messages) == 2
         assert self.telegram.messages[1]["text"] == "<b>resolved</b> GrafanaTest"
+        assert self.telegram.messages[2]["text"] == "🟢 Решено"
 
     async def test_telegram_rejected_html_falls_back_to_plain_text(self) -> None:
         """Verify telegram rejected html falls back to plain text."""
@@ -264,7 +302,7 @@ class IncidentTests(unittest.IsolatedAsyncioTestCase):
         await self.store.ingest([alert()], now=1000)
         await self.delivery.once(now=1000)
         await self.delivery.once(now=1002)
-        assert len(self.telegram.messages) == 1
+        assert len(self.telegram.messages) == 2
         assert "RESOLVED" in self.telegram.messages[1]["text"]
 
     async def test_invalid_batch_is_rejected_atomically(self) -> None:
@@ -293,7 +331,7 @@ class IncidentTests(unittest.IsolatedAsyncioTestCase):
         assert "RESOLVED" in self.telegram.messages[1]["text"]
         await self.store.check_canary(now=1382, max_silence=180)
         await self.delivery.once(now=1382)
-        assert len(self.telegram.messages) == 2
+        assert len(self.telegram.messages) == 3
 
     async def test_disabling_canary_retains_closed_history_and_discards_unfinished_updates(self) -> None:
         """Retain delivered recoveries while suppressing old firing and queued resolved canaries."""
@@ -321,7 +359,96 @@ class IncidentTests(unittest.IsolatedAsyncioTestCase):
         assert not await self.delivery.once(now=1547)
         await self.store.check_canary(now=1548, max_silence=180)
         assert await self.store.pending_count() == 0
+        assert len(self.telegram.messages) == 3
+
+    async def test_resolution_reply_retries_after_restart_and_repeated_webhooks_are_ignored(self) -> None:
+        """Retry a failed reply durably without creating another incident message."""
+
+        await self.store.ingest([alert()], now=1000)
+        await self.delivery.once(now=1000)
+        self.telegram.fail_replies = True
+        await self.store.ingest([alert("resolved")], now=1001)
+        await self.delivery.once(now=1001)
+
+        assert len(self.telegram.messages) == 1
+        assert "RESOLVED" in self.telegram.messages[1]["text"]
+        assert await self.store.pending_count() == 1
+
+        await self.store.cleanup(before=2000)
+        await self.store.close()
+        self.store = await Store.open(self.path, now=1100)
+        self.delivery = Delivery(self.store, self.telegram, "-123", None)
+        self.telegram.fail_replies = False
+        await self.delivery.once(now=1100)
+
         assert len(self.telegram.messages) == 2
+        assert self.telegram.messages[2]["text"] == "🟢 Решено"
+        assert await self.store.pending_count() == 0
+
+        await self.store.ingest([alert("resolved")], now=1101)
+        await self.store.ingest([alert()], now=1102)
+
+        assert not await self.delivery.once(now=1102)
+        assert len(self.telegram.messages) == 2
+
+    async def test_confirmed_resolution_reply_is_not_resent_after_completion_failure(self) -> None:
+        """Remember a successful reply even if completing the incident update fails."""
+
+        await self.store.ingest([alert()], now=1000)
+        await self.delivery.once(now=1000)
+        await self.store.ingest([alert("resolved")], now=1001)
+
+        with patch.object(self.store, "sent", side_effect=RuntimeError("commit failed")):
+            await self.delivery.once(now=1001)
+
+        assert len(self.telegram.messages) == 2
+        assert await self.store.pending_count() == 1
+
+        await self.store.close()
+        self.store = await Store.open(self.path, now=1100)
+        self.delivery = Delivery(self.store, self.telegram, "-123", None)
+        await self.delivery.once(now=1100)
+
+        assert len(self.telegram.messages) == 2
+        assert await self.store.pending_count() == 0
+
+    async def test_resolved_first_notification_does_not_reply_to_itself(self) -> None:
+        """Send one full notification when no firing message was previously delivered."""
+
+        await self.store.ingest([alert("resolved")], now=1000)
+        await self.delivery.once(now=1000)
+
+        assert len(self.telegram.messages) == 1
+        assert "RESOLVED" in self.telegram.messages[1]["text"]
+        assert self.telegram.messages[1]["reply_parameters"] is None
+        assert await self.store.pending_count() == 0
+
+    async def test_deleted_original_is_replaced_once_when_resolution_reply_fails(self) -> None:
+        """Retain the replacement message across a failed reply and process restart."""
+
+        await self.store.ingest([alert()], now=1000)
+        await self.delivery.once(now=1000)
+        del self.telegram.messages[1]
+        self.telegram.fail_replies = True
+        await self.store.ingest([alert("resolved")], now=1001)
+        await self.delivery.once(now=1001)
+
+        assert set(self.telegram.messages) == {2}
+        assert "RESOLVED" in self.telegram.messages[2]["text"]
+        assert await self.store.pending_count() == 1
+
+        await self.store.close()
+        self.store = await Store.open(self.path, now=1100)
+        self.delivery = Delivery(self.store, self.telegram, "-123", None)
+        self.telegram.fail_replies = False
+        await self.delivery.once(now=1100)
+
+        assert set(self.telegram.messages) == {2, 3}
+        assert self.telegram.messages[3]["text"] == "🟢 Решено"
+        parameters = self.telegram.messages[3]["reply_parameters"]
+        assert parameters is not None
+        assert parameters.message_id == 2
+        assert await self.store.pending_count() == 0
 
     async def test_retention_removes_only_delivered_closed_incidents(self) -> None:
         """Keep old active and undelivered incidents while expiring delivered recoveries."""

@@ -39,7 +39,7 @@ def test_settings_load_defaults_and_mask_file_credentials() -> None:
     assert settings.retention_period == 2592000
     assert settings.canary_enabled is False
     assert settings.canary_timeout_seconds == 180
-    assert settings.message_template == "default.txt.j2"
+    assert settings.message_template == "default.html.j2"
     assert str(settings.grafana_url) == "http://grafana:3000/grafana"
     assert settings.bot_token.get_secret_value() == "123456:offline-test-token"
     assert settings.chat_id.get_secret_value() == "-123"

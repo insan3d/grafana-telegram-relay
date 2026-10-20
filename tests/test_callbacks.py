@@ -82,7 +82,7 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
         await self.callbacks.handle(self.update(username=None))
         await self.delivery.once(now=1001)
 
-        assert "Acknowledged by Alice <&>" in self.telegram.messages[1]["text"]
+        assert "Acknowledged by Alice &lt;&amp;&gt;" in self.telegram.messages[1]["text"]
 
     async def test_other_chats_and_wrong_callback_data_cannot_acknowledge(self) -> None:
         """Reject forwarded or fabricated button identities without touching the incident."""

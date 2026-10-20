@@ -9,12 +9,12 @@ import logging
 from datetime import timedelta
 from time import monotonic
 
-from telegram import InputMediaPhoto
+from telegram import InputMediaPhoto, ReplyParameters
 from telegram.error import BadRequest, RetryAfter
 lazy from telegram import InlineKeyboardMarkup
 
 from .buttons import incident_keyboard, without_url_buttons
-from .messages import Message, MessageTemplates
+from .messages import Message, MessageTemplates, clip
 from .metrics import (
     DELIVERIES,
     DELIVERY_DURATION,
@@ -87,6 +87,9 @@ class Delivery:
 
             message_id, photo = await self._send_safe(row, image, message, markup)
 
+            if item.status == "resolved" and row["message_id"] is not None:
+                await self._resolution_reply(item, row, message_id, photo=photo)
+
             await self.store.sent(row, message_id, photo=photo)
             result = "success"
             DELIVERIES.labels("success").inc()
@@ -113,6 +116,29 @@ class Delivery:
             DELIVERY_DURATION.labels(result).observe(monotonic() - started)
 
         return True
+
+    async def _resolution_reply(self, item: Alert, row: Incident, message_id: int, *, photo: bool) -> None:
+        """Send a brief recovery reply with mentions and retain its confirmed identifier."""
+
+        if message_id != row["message_id"]:
+            await self.store.save_message(row, message_id, photo=photo)
+
+        if row["resolution_message_id"] is not None:
+            return
+
+        text = "🟢 Решено"
+
+        if mention := item.labels.get("mention"):
+            text += "\n" + mention
+
+        reply = await self.telegram.send_message(
+            chat_id=self.chat_id,
+            text=clip(text, 4096),
+            parse_mode=None,
+            reply_markup=None,
+            reply_parameters=ReplyParameters(message_id=message_id, allow_sending_without_reply=True),
+        )
+        await self.store.resolution_sent(row, reply.message_id)
 
     async def _image(self, item: Alert, row: Incident) -> bytes | None:
         """Render alert updates while reusing the screenshot for acknowledgement-only edits."""

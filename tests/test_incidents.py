@@ -295,6 +295,34 @@ class IncidentTests(unittest.IsolatedAsyncioTestCase):
         await self.delivery.once(now=1382)
         assert len(self.telegram.messages) == 2
 
+    async def test_disabling_canary_retains_closed_history_and_discards_unfinished_updates(self) -> None:
+        """Retain delivered recoveries while suppressing old firing and queued resolved canaries."""
+
+        await self.store.check_canary(now=1181, max_silence=180)
+        await self.delivery.once(now=1181)
+        await self.store.heartbeat(now=1182)
+        closed = await self.store.pending(now=1182)
+        assert closed is not None
+        await self.delivery.once(now=1182)
+        await self.store.check_canary(now=1363, max_silence=180)
+        await self.delivery.once(now=1363)
+        await self.store.disable_canary(now=1364)
+
+        async with self.store.db.execute("SELECT key FROM incidents") as cursor:
+            keys: list[object] = [row["key"] for row in await cursor.fetchall()]
+
+        assert keys == [closed["key"]]
+        assert not await self.delivery.once(now=1364)
+        assert (await self.store.metrics())["active"] == 0
+        await self.store.check_canary(now=1545, max_silence=180)
+        await self.store.heartbeat(now=1546)
+        assert await self.store.pending_count() == 1
+        await self.store.disable_canary(now=1547)
+        assert not await self.delivery.once(now=1547)
+        await self.store.check_canary(now=1548, max_silence=180)
+        assert await self.store.pending_count() == 0
+        assert len(self.telegram.messages) == 2
+
     async def test_retention_removes_only_delivered_closed_incidents(self) -> None:
         """Keep old active and undelivered incidents while expiring delivered recoveries."""
 

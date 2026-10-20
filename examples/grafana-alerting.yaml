@@ -10,44 +10,6 @@ contactPoints:
           url: http://relay:8080/webhook/grafana
           maxAlerts: 0
 
-  - name: telegram-canary
-    orgId: 1
-    receivers:
-      - uid: relay-canary
-        type: webhook
-        disableResolveMessage: true
-        settings:
-          url: http://relay:8080/webhook/canary
-          maxAlerts: 0
-
-groups:
-  - name: relay-canary
-    orgId: 1
-    folder: Infrastructure
-    interval: 1m
-
-    rules:
-      - uid: relay-canary
-        title: GrafanaCanary
-        condition: C
-        for: 0s
-        noDataState: Alerting
-        execErrState: Alerting
-        labels:
-          canary: "true"
-
-        data:
-          - refId: C
-            datasourceUid: __expr__
-            relativeTimeRange:
-              from: 0
-              to: 0
-
-            model:
-              refId: C
-              type: math
-              expression: "1"
-
 policies:
   - orgId: 1
     receiver: telegram
@@ -57,16 +19,3 @@ policies:
     group_by:
       - grafana_folder
       - alertname
-
-    routes:
-      - receiver: telegram-canary
-        group_wait: 0s
-        group_interval: 1m
-        repeat_interval: 1m
-        object_matchers:
-          - - alertname
-            - "="
-            - GrafanaCanary
-          - - canary
-            - "="
-            - "true"

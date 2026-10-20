@@ -75,22 +75,40 @@ uv run --locked grafana-telegram-relay
 
 The application listens on `0.0.0.0:8080`; Compose restricts the published host address to loopback.
 
-## 3. Connect Grafana and the canary
+## 3. Connect Grafana
 
 Create a webhook contact point pointing at `/webhook/grafana` using an address Grafana can reach. Set **Max Alerts = 0**
 and keep resolved notifications enabled. Route your alert rules to this contact point through notification policies.
 Grafana may group a webhook, but the relay creates one Telegram message per alert's `fingerprint + startsAt`.
 
-The complete [Grafana provisioning example](examples/grafana-alerting.yaml) defines ordinary and canary contact points,
-a constant-expression `GrafanaCanary` rule and a notification policy. Set its webhook URLs to the relay's reachable
-address. `http://relay:8080` works when Grafana and the relay share a Docker network. Merge its policy with an existing
-notification tree before loading it: the file defines the organization's root policy. Mount the result under
-`/etc/grafana/provisioning/alerting/` and restart Grafana.
+The [Grafana provisioning example](examples/grafana-alerting.yaml) defines the ordinary contact point and notification
+policy. Set its webhook URL to the relay's reachable address. `http://relay:8080` works when Grafana and the relay share
+a Docker network. Merge its policy with an existing notification tree before loading it: the file defines the
+organization's root policy. Mount the result under `/etc/grafana/provisioning/alerting/` and restart Grafana.
 
-The canary must fire continuously with labels `alertname=GrafanaCanary` and `canary=true`. Send it every minute to
-`/webhook/canary`, with no initial wait and resolved notifications disabled. Heartbeats create no Telegram messages.
-After 180 seconds without one, the independent watchdog creates `GrafanaCanaryMissing`; recovery edits the same message.
-Configure this route immediately: the watchdog is active from startup and preserves its deadline across restarts.
+The canary is optional and disabled by default. To enable it, set `CANARY_ENABLED=true` (also supported by Compose) and
+use the [canary provisioning example](examples/grafana-alerting-canary.yaml) instead of the ordinary example. It adds a
+continuously firing `GrafanaCanary` rule with labels `alertname=GrafanaCanary` and `canary=true`, plus a separate
+contact point. Send heartbeats every minute to `/webhook/canary`, with no initial wait and resolved notifications
+disabled. Heartbeats create no Telegram messages. After 180 seconds without one, the independent watchdog creates
+`GrafanaCanaryMissing`; recovery edits the same message. The enabled watchdog preserves its deadline across restarts.
+
+With `CANARY_ENABLED=false`, `/webhook/canary` returns 404 and heartbeats are not checked. Startup discards unfinished
+internal canary incidents and resets the heartbeat deadline; delivered closed history is retained. Messages already
+sent to Telegram remain in the chat. Retention cleanup for ordinary incidents runs in either mode.
+
+To disable a previously provisioned canary, delete its Grafana rule before removing its notification route or switching
+to the ordinary example. Omitting a rule from provisioning does not delete it; a remaining canary rule can reach the
+ordinary Telegram contact point. Remove the canary `groups` entry and add this top-level entry to your provisioning,
+then reload alerting provisioning or restart Grafana:
+
+```yaml
+deleteRules:
+  - orgId: 1
+    uid: relay-canary
+```
+
+Use your rule's UID and organization ID if customized. Remove this deletion entry before enabling the canary again.
 
 Associate a real alert rule with a dashboard/panel to receive screenshots. The relay accepts `__dashboardUid__` and
 `__panelId__` annotations or the webhook's `panelURL`. Panel variables `instance` and `project` receive the alert's
@@ -132,6 +150,7 @@ uses `127.0.0.1` for those links. Configure Grafana's public URL for access from
 | `STATE_DB` | `/data/state.db`; directory must be writable |
 | `TEMPLATES_DIR` | `/etc/grafana-telegram-relay/templates`; optional template overrides |
 | `MESSAGE_TEMPLATE` | `default.txt.j2`; global template name |
+| `CANARY_ENABLED` | `false`; enable canary heartbeats and watchdog |
 | `CANARY_TIMEOUT_SECONDS` | `180`; positive heartbeat timeout |
 | `RETENTION_PERIOD` | `30d`; positive duration parsed by humanfriendly, e.g. `12h`, `90m`, `1.5h` |
 
@@ -141,7 +160,7 @@ values; `GRAFANA_URL` must be an absolute HTTP or HTTPS URL.
 | Endpoint | Behavior |
 | --- | --- |
 | `POST /webhook/grafana` | Grafana webhook; 202 after persistence; 400 for invalid/truncated payloads |
-| `POST /webhook/canary` | Firing canary heartbeats only |
+| `POST /webhook/canary` | Firing canary heartbeats only; 404 when disabled |
 | `GET /healthz` | HTTP process liveness |
 | `GET /readyz` | Writable SQLite and running workers; 503 on local failure |
 | `GET /metrics` | Prometheus metrics |
@@ -192,9 +211,12 @@ scrape_configs:
 ```
 
 The dashboard covers HTTP requests and latency, accepted webhooks, delivery/render attempts and failures, template
-failures, ACK results, callback failures, persistent queue and active incidents, canary age/health/timeout, and process
-CPU/RSS/uptime. Metrics use the `telegram_bot_` prefix plus standard Python/process metrics. Labels never include chat
-IDs, tokens, fingerprints or message text. Probes and scrapes are excluded from HTTP request counters.
+failures, ACK results, callback failures, persistent queue and active incidents, optional canary age/health/timeout, and
+process CPU/RSS/uptime. Metrics use the `telegram_bot_` prefix plus standard Python/process metrics. Labels never
+include chat IDs, tokens, fingerprints or message text. Probes and scrapes are excluded from HTTP request counters.
+
+`telegram_bot_canary_enabled` reports whether the canary is enabled. Other canary gauges are zero while disabled;
+the dashboard shows `DISABLED` and hides heartbeat age and timeout.
 
 ## Development and distributions
 

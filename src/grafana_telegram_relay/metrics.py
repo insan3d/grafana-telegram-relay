@@ -43,9 +43,12 @@ OLDEST_PENDING = Gauge(
     "telegram_bot_oldest_pending_update_timestamp_seconds",
     "Timestamp of the oldest undelivered update, zero when the queue is empty",
 )
-CANARY_SEEN = Gauge("telegram_bot_canary_last_seen_seconds", "Last valid canary heartbeat timestamp")
+CANARY_ENABLED = Gauge("telegram_bot_canary_enabled", "Whether the optional canary watchdog is enabled")
+CANARY_SEEN = Gauge(
+    "telegram_bot_canary_last_seen_seconds", "Last valid canary heartbeat timestamp, zero when disabled"
+)
 CANARY_HEALTHY = Gauge("telegram_bot_canary_healthy", "Whether the last canary heartbeat is within its timeout")
-CANARY_TIMEOUT = Gauge("telegram_bot_canary_timeout_seconds", "Configured canary heartbeat timeout")
+CANARY_TIMEOUT = Gauge("telegram_bot_canary_timeout_seconds", "Configured canary heartbeat timeout, zero when disabled")
 
 ACKNOWLEDGEMENTS = Counter("telegram_bot_acknowledgements_total", "Incident acknowledgement callbacks", ["result"])
 CALLBACK_FAILURES = Counter("telegram_bot_callback_failures_total", "Failed Telegram polls or callback answers")

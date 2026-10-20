@@ -1,7 +1,7 @@
 {
   "uid": "monitoring-telegram-bot",
   "title": "Grafana Telegram Relay",
-  "description": "Grafana webhooks, persistent Telegram incident delivery, rendering, acknowledgements, callback polling and an independent canary watchdog. Select any Prometheus-compatible datasource and a relay scrape job; Docker labels are not required. Histograms and labelled counters appear after their first event.",
+  "description": "Grafana webhooks, persistent Telegram incident delivery, rendering, acknowledgements, callback polling and an optional canary watchdog (disabled by default). Select any Prometheus-compatible datasource and a relay scrape job; Docker labels are not required. Histograms and labelled counters appear after their first event.",
   "tags": [
     "monitoring",
     "infrastructure",
@@ -55,7 +55,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(telegram_bot_canary_healthy, job)",
+          "query": "label_values(telegram_bot_pending_incidents, job)",
           "refId": "job"
         },
         "refresh": 1,
@@ -73,7 +73,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(telegram_bot_canary_healthy{job=~\"${job:regex}\"}, instance)",
+          "query": "label_values(telegram_bot_pending_incidents{job=~\"${job:regex}\"}, instance)",
           "refId": "instance"
         },
         "refresh": 1,
@@ -171,7 +171,7 @@
       "id": 2,
       "type": "stat",
       "title": "Canary heartbeat",
-      "description": "Independent watchdog: heartbeat every minute, missing after the configured timeout. This is Grafana notification-chain health, not bot readiness.",
+      "description": "Optional watchdog, disabled by default. Enable with CANARY_ENABLED=true to monitor the Grafana notification chain.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -185,7 +185,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "min(telegram_bot_canary_healthy{instance=~\"${instance:regex}\",job=~\"${job:regex}\"})",
+          "expr": "min(telegram_bot_canary_healthy{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} and on(job, instance) (telegram_bot_canary_enabled{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} == 1)) or (max(telegram_bot_canary_enabled{instance=~\"${instance:regex}\",job=~\"${job:regex}\"}) - 1)",
           "legendFormat": "{{instance}}",
           "instant": true,
           "range": false
@@ -221,6 +221,10 @@
                 "1": {
                   "text": "HEALTHY",
                   "color": "green"
+                },
+                "-1": {
+                  "text": "DISABLED",
+                  "color": "gray"
                 }
               }
             }
@@ -375,7 +379,7 @@
       "id": 5,
       "type": "stat",
       "title": "Last heartbeat age",
-      "description": "Maximum age across selected bot instances; compare with heartbeat timeout below.",
+      "description": "Maximum age across selected bot instances; compare with heartbeat timeout below. Only enabled canary instances are shown.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -389,7 +393,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(clamp_min(time() - telegram_bot_canary_last_seen_seconds{instance=~\"${instance:regex}\",job=~\"${job:regex}\"}, 0))",
+          "expr": "max(clamp_min(time() - (telegram_bot_canary_last_seen_seconds{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} and on(job, instance) (telegram_bot_canary_enabled{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} == 1)), 0))",
           "legendFormat": "{{instance}}",
           "instant": true,
           "range": false
@@ -434,7 +438,7 @@
       "id": 6,
       "type": "stat",
       "title": "Heartbeat timeout",
-      "description": "",
+      "description": "Only enabled canary instances are shown.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -448,7 +452,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "min(telegram_bot_canary_timeout_seconds{instance=~\"${instance:regex}\",job=~\"${job:regex}\"})",
+          "expr": "min((telegram_bot_canary_timeout_seconds{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} and on(job, instance) (telegram_bot_canary_enabled{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} == 1)))",
           "legendFormat": "{{instance}}",
           "instant": true,
           "range": false
@@ -1170,7 +1174,7 @@
       "id": 18,
       "type": "timeseries",
       "title": "Canary heartbeat age",
-      "description": "Age should stay below timeout. A missing heartbeat creates a Telegram incident and recovery edits that same message.",
+      "description": "Age should stay below timeout. A missing heartbeat creates a Telegram incident and recovery edits that same message. Only enabled canary instances are shown.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1184,14 +1188,14 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "clamp_min(time() - telegram_bot_canary_last_seen_seconds{instance=~\"${instance:regex}\",job=~\"${job:regex}\"}, 0)",
+          "expr": "clamp_min(time() - (telegram_bot_canary_last_seen_seconds{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} and on(job, instance) (telegram_bot_canary_enabled{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} == 1)), 0)",
           "legendFormat": "{{instance}} · age",
           "instant": false,
           "range": true
         },
         {
           "refId": "B",
-          "expr": "telegram_bot_canary_timeout_seconds{instance=~\"${instance:regex}\",job=~\"${job:regex}\"}",
+          "expr": "(telegram_bot_canary_timeout_seconds{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} and on(job, instance) (telegram_bot_canary_enabled{instance=~\"${instance:regex}\",job=~\"${job:regex}\"} == 1))",
           "legendFormat": "{{instance}} · timeout",
           "instant": false,
           "range": true

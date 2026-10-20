@@ -24,6 +24,7 @@ from .delivery import Delivery
 from .messages import MessageTemplates
 from .metrics import (
     ACTIVE,
+    CANARY_ENABLED,
     CANARY_HEALTHY,
     CANARY_SEEN,
     CANARY_TIMEOUT,
@@ -95,13 +96,14 @@ async def observe_http(
         HTTP_DURATION.labels(route, method).observe(monotonic() - started)
 
 
-def create_app(store: Store, canary_timeout: float = 180) -> web.Application:
+def create_app(store: Store, canary_timeout: float = 180, *, canary_enabled: bool = False) -> web.Application:
     """
     Build the webhook and operational HTTP routes.
 
     Args:
         store: Open persistent incident store.
         canary_timeout: Allowed heartbeat silence in seconds.
+        canary_enabled: Whether to accept heartbeats and expose active canary state.
 
     Returns:
         An application ready for worker lifecycle registration or HTTP tests.
@@ -158,13 +160,17 @@ def create_app(store: Store, canary_timeout: float = 180) -> web.Application:
         PENDING.set(state["pending"])
         ACTIVE.set(state["active"])
         OLDEST_PENDING.set(state["oldest_pending"])
-        CANARY_SEEN.set(state["last_seen"])
-        CANARY_HEALTHY.set(time.time() - state["last_seen"] <= canary_timeout)
-        CANARY_TIMEOUT.set(canary_timeout)
+        CANARY_ENABLED.set(canary_enabled)
+        CANARY_SEEN.set(state["last_seen"] if canary_enabled else 0)
+        CANARY_HEALTHY.set(canary_enabled and time.time() - state["last_seen"] <= canary_timeout)
+        CANARY_TIMEOUT.set(canary_timeout if canary_enabled else 0)
         return web.Response(body=generate_latest(), headers={"Content-Type": CONTENT_TYPE_LATEST})
 
     app.router.add_post("/webhook/grafana", webhook)
-    app.router.add_post("/webhook/canary", webhook)
+
+    if canary_enabled:
+        app.router.add_post("/webhook/canary", webhook)
+
     app.router.add_get("/healthz", health)
     app.router.add_get("/readyz", ready)
     app.router.add_get("/metrics", metrics)
@@ -185,12 +191,13 @@ async def deliver_pending(delivery: Delivery) -> None:
             await asyncio.sleep(1)
 
 
-async def watch_canary(store: Store, *, max_silence: float, retention: float) -> None:
+async def maintain_store(store: Store, *, canary_enabled: bool, max_silence: float, retention: float) -> None:
     """
-    Check heartbeat deadlines and expire closed incident history.
+    Expire closed incident history and optionally check heartbeat deadlines.
 
     Args:
         store: Persistent incident and heartbeat state.
+        canary_enabled: Whether heartbeat silence creates watchdog incidents.
         max_silence: Maximum heartbeat silence in seconds.
         retention: Age limit for delivered resolved incidents in seconds.
     """
@@ -199,13 +206,15 @@ async def watch_canary(store: Store, *, max_silence: float, retention: float) ->
 
     while True:
         now = time.time()
-        await store.check_canary(now, max_silence)
+
+        if canary_enabled:
+            await store.check_canary(now, max_silence)
 
         if now >= cleanup_at:
             await store.cleanup(now - retention)
             cleanup_at = now + 3600
 
-        await asyncio.sleep(min(5, max_silence))
+        await asyncio.sleep(min(5, max_silence) if canary_enabled else 3600)
 
 
 async def application() -> web.Application:
@@ -218,7 +227,11 @@ async def application() -> web.Application:
 
     settings = Settings()
     store = await Store.open(settings.state_db, time.time())
-    app = create_app(store, canary_timeout=settings.canary_timeout_seconds)
+
+    if not settings.canary_enabled:
+        await store.disable_canary(time.time())
+
+    app = create_app(store, canary_timeout=settings.canary_timeout_seconds, canary_enabled=settings.canary_enabled)
 
     telegram_request = HTTPXRequest(connection_pool_size=3, read_timeout=40, connect_timeout=10)
     telegram = Bot(
@@ -243,8 +256,11 @@ async def application() -> web.Application:
                 asyncio.create_task(deliver_pending(delivery)),
                 asyncio.create_task(callbacks.run()),
                 asyncio.create_task(
-                    watch_canary(
-                        store, max_silence=settings.canary_timeout_seconds, retention=settings.retention_period
+                    maintain_store(
+                        store,
+                        canary_enabled=settings.canary_enabled,
+                        max_silence=settings.canary_timeout_seconds,
+                        retention=settings.retention_period,
                     )
                 ),
             ]

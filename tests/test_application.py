@@ -80,6 +80,7 @@ class ApplicationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(Bot, "get_updates", idle_updates),
                 patch.object(HTTPXRequest, "do_request") as telegram_request,
                 patch.object(Store, "cleanup", cleanup),
+                patch.object(Store, "check_canary") as check_canary,
             ):
                 app = await application()
 
@@ -90,4 +91,70 @@ class ApplicationTests(unittest.IsolatedAsyncioTestCase):
                         keys: list[object] = [row["key"] for row in await cursor.fetchall()]
 
                     assert keys == [retained.key]
+                    check_canary.assert_not_called()
+                    telegram_request.assert_not_called()
+
+    async def test_enabled_canary_creates_an_outage_after_restart(self) -> None:
+        """Run the optional watchdog against an expired persisted heartbeat."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            values = environment(Path(directory))
+            values["CANARY_ENABLED"] = "true"
+            store = await Store.open(values["STATE_DB"], now=time.time() - 181)
+            await store.close()
+            checked = asyncio.Event()
+            original_check = Store.check_canary
+
+            async def check(current: Store, now: float, max_silence: float) -> float:
+                """Signal completion after persisting a real watchdog incident."""
+
+                last_seen = await original_check(current, now, max_silence)
+                checked.set()
+                return last_seen
+
+            with (
+                patch.dict(os.environ, values, clear=True),
+                patch.object(Bot, "get_updates", idle_updates),
+                patch.object(HTTPXRequest, "do_request") as telegram_request,
+                patch.object(Store, "check_canary", check),
+                patch.object(Delivery, "once", return_value=False),
+            ):
+                app = await application()
+
+                async with TestClient(TestServer(app)):
+                    await asyncio.wait_for(checked.wait(), timeout=3)
+                    assert await app[STORE].pending_count() == 1
+                    telegram_request.assert_not_called()
+
+    async def test_disabled_canary_discards_unfinished_watchdog_incidents_before_delivery(self) -> None:
+        """Suppress a saved canary outage while retaining ordinary pending alerts."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            values = environment(Path(directory))
+            store = await Store.open(values["STATE_DB"], now=1000)
+
+            try:
+                await store.check_canary(now=1200, max_silence=180)
+                await store.ingest([alert()], now=1200)
+
+            finally:
+                await store.close()
+
+            with (
+                patch.dict(os.environ, values, clear=True),
+                patch.object(Bot, "get_updates", idle_updates),
+                patch.object(HTTPXRequest, "do_request") as telegram_request,
+                patch.object(Delivery, "once", return_value=False),
+            ):
+                app = await application()
+
+                async with TestClient(TestServer(app)) as client:
+                    row = await app[STORE].pending(now=time.time())
+                    assert row is not None
+                    assert row["key"] == alert().key
+                    assert await app[STORE].pending_count() == 1
+                    assert (await app[STORE].metrics())["active"] == 1
+                    assert (await client.post("/webhook/canary", json={})).status == 404
+                    await app[STORE].heartbeat(now=time.time())
+                    assert await app[STORE].pending_count() == 1
                     telegram_request.assert_not_called()

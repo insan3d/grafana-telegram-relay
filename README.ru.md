@@ -74,22 +74,40 @@ uv run --locked grafana-telegram-relay
 
 Приложение слушает `0.0.0.0:8080`; Compose ограничивает опубликованный адрес хоста loopback-интерфейсом.
 
-## 3. Подключить Grafana и canary
+## 3. Подключить Grafana
 
 Создайте webhook contact point с адресом `/webhook/grafana`, доступным из Grafana. Задайте **Max Alerts = 0**, оставьте
 уведомления о восстановлении включёнными. Направьте правила в этот contact point через notification policies. Grafana
 может группировать webhook, но relay создаёт отдельное Telegram-сообщение на каждое сочетание `fingerprint + startsAt`.
 
-Полный [пример provisioning Grafana](examples/grafana-alerting.yaml) содержит обычный и canary contact points, постоянно
-firing-правило `GrafanaCanary` на константном выражении и notification policy. Замените URL вебхуков на доступный
-Grafana адрес relay. `http://relay:8080` работает в общей Docker-сети. Перед загрузкой объедините политику с имеющимся
-деревом: пример задаёт корневую политику организации. Подключите файл в `/etc/grafana/provisioning/alerting/` и
-перезапустите Grafana.
+[Пример provisioning Grafana](examples/grafana-alerting.yaml) содержит обычный contact point и notification policy.
+Замените URL вебхука на доступный Grafana адрес relay. `http://relay:8080` работает в общей Docker-сети. Перед загрузкой
+объедините политику с имеющимся деревом: пример задаёт корневую политику организации. Подключите файл в
+`/etc/grafana/provisioning/alerting/` и перезапустите Grafana.
 
-Canary постоянно firing с labels `alertname=GrafanaCanary`, `canary=true`. Направляйте его раз в минуту в
-`/webhook/canary`, без начальной задержки и уведомлений о восстановлении. Heartbeat не создаёт сообщений в Telegram.
-После 180 секунд тишины независимый watchdog создаёт `GrafanaCanaryMissing`; восстановление редактирует то же сообщение.
-Настройте маршрут сразу: watchdog включён с запуска и сохраняет отсчёт при перезапуске.
+Canary опционален и по умолчанию выключен. Для включения задайте `CANARY_ENABLED=true` (в том числе при запуске через
+Compose) и используйте [пример с canary](examples/grafana-alerting-canary.yaml) вместо обычного. Он добавляет постоянно
+firing-правило `GrafanaCanary` с labels `alertname=GrafanaCanary`, `canary=true` и отдельный contact point. Направляйте
+heartbeat раз в минуту в `/webhook/canary`, без начальной задержки и уведомлений о восстановлении. Heartbeat не создаёт
+сообщений в Telegram. После 180 секунд тишины независимый watchdog создаёт `GrafanaCanaryMissing`; восстановление
+редактирует то же сообщение. Включённый watchdog сохраняет отсчёт при перезапуске.
+
+При `CANARY_ENABLED=false` маршрут `/webhook/canary` возвращает 404, heartbeat не проверяется. При запуске удаляются
+незавершённые внутренние canary-инциденты и сбрасывается отсчёт heartbeat; доставленная закрытая история сохраняется.
+Сообщения, уже отправленные в Telegram, остаются в чате. Очистка обычной истории по retention работает в обоих режимах.
+
+Чтобы отключить уже созданный через provisioning canary, удалите его правило в Grafana до удаления маршрута уведомлений
+или перехода на обычный пример. Отсутствие правила в provisioning не удаляет его; оставшееся правило canary может
+попасть в обычный Telegram contact point. Удалите блок `groups` с canary и добавьте в корень provisioning этот блок,
+затем перезагрузите provisioning алертов или перезапустите Grafana:
+
+```yaml
+deleteRules:
+  - orgId: 1
+    uid: relay-canary
+```
+
+Если UID правила или ID организации менялись, подставьте свои. Перед повторным включением canary удалите этот блок.
 
 Для скриншотов свяжите настоящее правило с дашбордом и панелью. Relay использует аннотации `__dashboardUid__` и
 `__panelId__` либо `panelURL` из webhook. Переменные панели `instance` и `project` получают labels `instance` и
@@ -131,6 +149,7 @@ ACK занимает отдельную строку клавиатуры во �
 | `STATE_DB` | `/data/state.db`; каталог должен допускать запись |
 | `TEMPLATES_DIR` | `/etc/grafana-telegram-relay/templates`; каталог пользовательских шаблонов |
 | `MESSAGE_TEMPLATE` | `default.txt.j2`; общий шаблон |
+| `CANARY_ENABLED` | `false`; включить heartbeat и watchdog canary |
 | `CANARY_TIMEOUT_SECONDS` | `180`; положительный таймаут heartbeat |
 | `RETENTION_PERIOD` | `30d`; положительная длительность через humanfriendly: `12h`, `90m`, `1.5h` |
 
@@ -140,7 +159,7 @@ ACK занимает отдельную строку клавиатуры во �
 | Endpoint | Поведение |
 | --- | --- |
 | `POST /webhook/grafana` | Webhook Grafana: 202 после сохранения, 400 при неверном/усечённом payload |
-| `POST /webhook/canary` | Только firing-heartbeat canary |
+| `POST /webhook/canary` | Только firing-heartbeat canary; 404, если выключен |
 | `GET /healthz` | Живость HTTP-процесса |
 | `GET /readyz` | Записываемая SQLite и работающие workers; 503 при локальной неисправности |
 | `GET /metrics` | Метрики Prometheus |
@@ -191,9 +210,12 @@ scrape_configs:
 ```
 
 Дашборд показывает HTTP-запросы и задержки, принятые webhook, попытки и ошибки доставки/рендера, ошибки шаблонов,
-результаты ACK, ошибки callbacks, постоянную очередь и активные инциденты, возраст/здоровье/таймаут canary и
-CPU/RSS/uptime процесса. У метрик префикс `telegram_bot_`, дополнительно доступны стандартные Python/process-метрики.
+результаты ACK, ошибки callbacks, постоянную очередь и активные инциденты, возраст/здоровье/таймаут опционального canary
+и CPU/RSS/uptime процесса. У метрик префикс `telegram_bot_`, дополнительно доступны стандартные Python/process-метрики.
 Labels не содержат chat ID, токенов, fingerprint и текста сообщений. Probes и scrape исключены из HTTP-счётчиков.
+
+`telegram_bot_canary_enabled` показывает, включён ли canary. При выключенном canary остальные его gauges равны нулю;
+дашборд показывает `DISABLED` и скрывает возраст heartbeat и таймаут.
 
 ## Разработка и дистрибутивы
 

@@ -17,7 +17,7 @@ def settings_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     for name, value in environment(tmp_path).items():
         monkeypatch.setenv(name, value)
 
-    for name in ("RETENTION_PERIOD", "CANARY_TIMEOUT_SECONDS", "TEMPLATES_DIR", "MESSAGE_TEMPLATE"):
+    for name in ("RETENTION_PERIOD", "CANARY_ENABLED", "CANARY_TIMEOUT_SECONDS", "TEMPLATES_DIR", "MESSAGE_TEMPLATE"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -37,6 +37,7 @@ def test_settings_load_defaults_and_mask_file_credentials() -> None:
     settings = Settings()
 
     assert settings.retention_period == 2592000
+    assert settings.canary_enabled is False
     assert settings.canary_timeout_seconds == 180
     assert settings.message_template == "default.txt.j2"
     assert str(settings.grafana_url) == "http://grafana:3000/grafana"

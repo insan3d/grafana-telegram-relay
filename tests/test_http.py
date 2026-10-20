@@ -28,7 +28,7 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
 
         self.directory = tempfile.TemporaryDirectory()
         self.store = await Store.open(Path(self.directory.name) / "state.db", now=1000)
-        self.app = create_app(self.store)
+        self.app = create_app(self.store, canary_enabled=True)
         self.client = TestClient(TestServer(self.app))
         await self.client.start_server()
 
@@ -109,11 +109,34 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         metrics = await self.samples()
         assert metrics["telegram_bot_pending_incidents", ()] == 1
         assert metrics["telegram_bot_active_incidents", ()] == 1
+        assert metrics["telegram_bot_canary_enabled", ()] == 1
         assert metrics["telegram_bot_canary_last_seen_seconds", ()] == 1000
         assert metrics["telegram_bot_canary_healthy", ()] == 0
         await self.store.heartbeat(now=time.time())
         metrics = await self.samples()
         assert metrics["telegram_bot_canary_healthy", ()] == 1
+
+    async def test_default_app_disables_canary_webhook_and_metrics(self) -> None:
+        """Keep ordinary webhooks usable without accepting or reporting canary heartbeats."""
+
+        async with TestClient(TestServer(create_app(self.store))) as client:
+            item = alert_payload(labels={"alertname": "GrafanaCanary", "canary": "true"})
+            assert (await client.post("/webhook/canary", json={"alerts": [item]})).status == 404
+            assert (await self.store.metrics())["last_seen"] == 1000
+            assert await self.store.pending_count() == 0
+            assert (await client.post("/webhook/grafana", json={"alerts": [alert_payload()]})).status == 202
+            response = await client.get("/metrics")
+            metrics = {
+                sample.name: sample.value
+                for family in text_string_to_metric_families(await response.text())
+                for sample in family.samples
+            }
+
+            assert metrics["telegram_bot_canary_enabled"] == 0
+            assert metrics["telegram_bot_canary_healthy"] == 0
+            assert metrics["telegram_bot_canary_last_seen_seconds"] == 0
+            assert metrics["telegram_bot_canary_timeout_seconds"] == 0
+            assert metrics["telegram_bot_pending_incidents"] == 1
 
     async def test_metrics_bound_unknown_paths_and_exclude_probes(self) -> None:
         """Verify metrics bound unknown paths and exclude probes."""

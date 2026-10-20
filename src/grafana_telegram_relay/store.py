@@ -396,6 +396,22 @@ class Store:
         ):
             return _integer(_value(await _row(cursor), 0))
 
+    async def disable_canary(self, now: float) -> None:
+        """
+        Discard unfinished watchdog incidents and reset the heartbeat deadline.
+
+        Args:
+            now: Startup timestamp while the optional watchdog is disabled.
+        """
+
+        async with self.lock:
+            await self.db.execute(
+                "DELETE FROM incidents WHERE json_extract(payload,'$.fingerprint')='internal-grafana-canary' "
+                "AND (delivered<version OR json_extract(payload,'$.status')='firing')"
+            )
+            await self.db.execute("UPDATE canary SET last_seen=?,outage_start=NULL WHERE id=1", (now,))
+            await self.db.commit()
+
     async def heartbeat(self, now: float) -> None:
         """
         Persist a heartbeat and atomically resolve a watchdog outage.

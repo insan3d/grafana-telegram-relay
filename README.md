@@ -154,6 +154,7 @@ uses `127.0.0.1` for those links. Configure Grafana's public URL for access from
 | `STATE_DB` | `/data/state.db`; directory must be writable |
 | `TEMPLATES_DIR` | `/etc/grafana-telegram-relay/templates`; optional template overrides |
 | `MESSAGE_TEMPLATE` | `default.html.j2`; global template name |
+| `REMINDER_INTERVAL` | `0s` disables repeats; e.g. `5m` repeats firing alerts until ACK |
 | `CANARY_ENABLED` | `false`; enable canary heartbeats and watchdog |
 | `CANARY_TIMEOUT_SECONDS` | `180`; positive heartbeat timeout |
 | `RETENTION_PERIOD` | `30d`; positive duration parsed by humanfriendly, e.g. `12h`, `90m`, `1.5h` |
@@ -176,7 +177,25 @@ are retained for the configured period; active and pending incidents are not pru
 Run **one replica per bot token and database**. Telegram has no send idempotency key: a crash between sending and saving
 the message ID, or an ambiguous network timeout, can cause a duplicate. The canary monitors the Grafana notification
 chain; an external check is needed to detect failure of the relay, its host or Telegram itself. The same send/commit
-limitation applies to recovery replies.
+limitation applies to recovery replies and reminders.
+
+## Repeated notifications until ACK
+
+Set `REMINDER_INTERVAL=5m` to send a new copy every five minutes while an incident is firing and unacknowledged.
+The default `0s` disables repeats. The supplied Compose file forwards this variable; recreate the container after
+changing it. Repeats do not require another Grafana webhook and preserve the original text, mentions and screenshot,
+with an **Acknowledge** button on every copy. Screenshots are copied without rendering the panel again.
+
+Acknowledging the original or any copy acknowledges the whole incident. The relay deletes all tracked copies and
+updates the original with the operator's name. Recovery also stops repeats and removes copies, retaining the original
+and its recovery reply. Schedules, copy IDs and deletion retries survive restarts; cleanup continues when repeats are
+disabled and after incident history expires. After downtime the relay sends one due reminder, without replaying every
+missed interval. `telegram_bot_reminders_total{action="send|delete",result="success|failure"}` records these operations.
+
+[Telegram limits message deletion to 48 hours](https://core.telegram.org/bots/api#deletemessage), so the relay removes
+day-old copies even before ACK while continuing to send new reminders. A bot outage longer than 48 hours or missing
+Telegram permissions can prevent cleanup of old copies; failed deletions remain queued. The original is never removed
+by reminder cleanup.
 
 ## Message templates
 
@@ -253,6 +272,13 @@ make image
 `make help` lists targets. `make format` formats Python/TOML/Markdown; `make coverage` reports coverage. `make lint`
 includes tracked and untracked files. Git hooks run linters at commit time and offline tests before push. No hook posts
 to Telegram. `make clean` removes generated artifacts and keeps secrets and persistent data.
+
+Release versions follow `MAJOR.MINOR.PATCH`; the current release is `0.2.1`. Update the version with
+`uv version --bump patch` and keep the Dockerfile's default OCI version label in sync. `make publish` runs checks and
+builds the
+distributions, then builds and pushes `apozlevich/grafana-telegram-relay:0.2.1` and `:latest` using the version from
+`pyproject.toml`. The image's OCI version label uses the same value. Override `REPOSITORY` for another registry.
+Release tags contain versions; `latest` follows the most recently published release.
 
 Checks include Ruff ALL, strict mypy, dependency imports and lock consistency, package metadata, TOML validation and
 format, YAML lint, JSON validation, JSON formatting, rumdl ALL, native hadolint, checkmake, ShellCheck,

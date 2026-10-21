@@ -30,6 +30,18 @@ class MessageReference(Protocol):
 class TelegramClient(Protocol):
     """Define the Telegram operations for incident messages and recovery replies."""
 
+    async def copy_message(
+        self, *, chat_id: ChatId, from_chat_id: ChatId, message_id: int, reply_markup: InlineKeyboardMarkup | None
+    ) -> MessageReference:
+        """Create a reminder with the original content, media, and incident controls."""
+
+        ...
+
+    async def delete_message(self, *, chat_id: ChatId, message_id: int) -> bool:
+        """Delete a tracked reminder from the configured chat."""
+
+        ...
+
     async def send_message(
         self,
         *,

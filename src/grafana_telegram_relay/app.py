@@ -20,7 +20,7 @@ from telegram import Bot
 from telegram.request import HTTPXRequest
 
 from .callbacks import Callbacks
-from .delivery import Delivery
+from .delivery import Delivery, DeliveryOptions
 from .messages import MessageTemplates
 from .metrics import (
     ACTIVE,
@@ -242,7 +242,13 @@ async def application() -> web.Application:
     render = Renderer(session, str(settings.grafana_url), settings.grafana_token.get_secret_value())
     templates = MessageTemplates(settings.templates_dir, default=settings.message_template)
 
-    delivery = Delivery(store, telegram, settings.chat_id.get_secret_value(), render, templates)
+    delivery = Delivery(
+        store,
+        telegram,
+        settings.chat_id.get_secret_value(),
+        render,
+        DeliveryOptions(templates=templates, reminder_interval=settings.reminder_interval),
+    )
     callbacks = Callbacks(store, telegram, delivery.chat_id)
 
     async def lifecycle(app: web.Application) -> AsyncIterator[None]:

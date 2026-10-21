@@ -9,7 +9,7 @@ LABEL org.opencontainers.image.title="grafana-telegram-relay" \
     org.opencontainers.image.documentation="https://github.com/insan3d/grafana-telegram-relay#readme" \
     org.opencontainers.image.licenses="Apache-2.0" \
     org.opencontainers.image.source="https://github.com/insan3d/grafana-telegram-relay" \
-    org.opencontainers.image.version="0.1.0" \
+    org.opencontainers.image.version="0.2.1" \
     org.opencontainers.image.url="https://hub.docker.com/r/apozlevich/grafana-telegram-relay" \
     org.opencontainers.image.authors="Alexander Pozlevich"
 

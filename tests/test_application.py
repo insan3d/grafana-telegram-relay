@@ -22,6 +22,37 @@ from tests.fakes import Telegram, idle_updates
 class ApplicationTests(unittest.IsolatedAsyncioTestCase):
     """Exercise startup, readiness, and cleanup of the production workers."""
 
+    async def test_configured_reminder_interval_reaches_delivery_worker(self) -> None:
+        """Apply the environment's repeat interval to the actual production worker."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            values = environment(Path(directory))
+            values["REMINDER_INTERVAL"] = "5m"
+            observed: list[float] = []
+            checked = asyncio.Event()
+
+            async def once(delivery: Delivery, _now: float) -> bool:
+                """Capture the configured interval before any outgoing Telegram operation."""
+
+                observed.append(delivery.reminders.interval)
+                checked.set()
+
+                return False
+
+            with (
+                patch.dict(os.environ, values, clear=True),
+                patch.object(Bot, "get_updates", idle_updates),
+                patch.object(HTTPXRequest, "do_request") as telegram_request,
+                patch.object(Delivery, "once", once),
+            ):
+                app = await application()
+
+                async with TestClient(TestServer(app)):
+                    await asyncio.wait_for(checked.wait(), timeout=3)
+
+                    assert observed == [300]
+                    telegram_request.assert_not_called()
+
     async def test_production_lifecycle_starts_and_stops_workers_without_telegram(self) -> None:
         """Serve readiness and stop every worker without contacting Telegram."""
 

@@ -58,6 +58,7 @@ def _parse_duration(value: object) -> object:
 
 type FileSecret = Annotated[SecretStr, BeforeValidator(_read_secret), Field(min_length=1)]
 type Duration = Annotated[FiniteFloat, BeforeValidator(_parse_duration), Field(gt=0, strict=True)]
+type ReminderInterval = Annotated[FiniteFloat, BeforeValidator(_parse_duration), Field(ge=0, strict=True)]
 
 
 class Settings(BaseSettings):
@@ -77,6 +78,7 @@ class Settings(BaseSettings):
     state_db: Path = Field(default=Path("/data/state.db"), validation_alias="STATE_DB")
     templates_dir: Path = Field(default=Path("/etc/grafana-telegram-relay/templates"), validation_alias="TEMPLATES_DIR")
     message_template: str = Field(default="default.html.j2", min_length=1, validation_alias="MESSAGE_TEMPLATE")
+    reminder_interval: ReminderInterval = Field(default=0.0, validation_alias="REMINDER_INTERVAL")
     canary_enabled: bool = Field(default=False, validation_alias="CANARY_ENABLED")
     canary_timeout_seconds: PositiveInt = Field(default=180, validation_alias="CANARY_TIMEOUT_SECONDS")
     retention_period: Duration = Field(default=30 * 86400, validation_alias="RETENTION_PERIOD")

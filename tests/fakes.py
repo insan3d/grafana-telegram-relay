@@ -50,6 +50,43 @@ class Telegram:
         self.next_id = 1
         self.fail = False
         self.fail_replies = False
+        self.fail_deletes = False
+
+    async def copy_message(
+        self, *, chat_id: ChatId, from_chat_id: ChatId, message_id: int, reply_markup: InlineKeyboardMarkup | None
+    ) -> SentMessage:
+        """Copy the visible message and retain media without contacting Telegram."""
+
+        if self.fail:
+            msg = "unavailable"
+            raise NetworkError(msg)
+
+        assert from_chat_id == chat_id
+
+        if message_id not in self.messages:
+            msg = "Message to copy not found"
+            raise BadRequest(msg)
+
+        record = copy.deepcopy(self.message(message_id))
+        record.update({"chat_id": chat_id, "reply_markup": reply_markup})
+
+        return self.send(record)
+
+    async def delete_message(self, *, chat_id: ChatId, message_id: int) -> bool:
+        """Delete a recorded message or simulate a retryable Telegram failure."""
+
+        if self.fail_deletes:
+            msg = "unavailable"
+            raise NetworkError(msg)
+
+        if message_id not in self.messages:
+            msg = "Message to delete not found"
+            raise BadRequest(msg)
+
+        assert self.messages[message_id]["chat_id"] == chat_id
+        del self.messages[message_id]
+
+        return True
 
     async def send_message(
         self,

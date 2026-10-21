@@ -17,7 +17,14 @@ def settings_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     for name, value in environment(tmp_path).items():
         monkeypatch.setenv(name, value)
 
-    for name in ("RETENTION_PERIOD", "CANARY_ENABLED", "CANARY_TIMEOUT_SECONDS", "TEMPLATES_DIR", "MESSAGE_TEMPLATE"):
+    for name in (
+        "RETENTION_PERIOD",
+        "CANARY_ENABLED",
+        "CANARY_TIMEOUT_SECONDS",
+        "TEMPLATES_DIR",
+        "MESSAGE_TEMPLATE",
+        "REMINDER_INTERVAL",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -40,6 +47,7 @@ def test_settings_load_defaults_and_mask_file_credentials() -> None:
     assert settings.canary_enabled is False
     assert settings.canary_timeout_seconds == 180
     assert settings.message_template == "default.html.j2"
+    assert settings.reminder_interval == 0
     assert str(settings.grafana_url) == "http://grafana:3000/grafana"
     assert settings.bot_token.get_secret_value() == "123456:offline-test-token"
     assert settings.chat_id.get_secret_value() == "-123"
@@ -54,6 +62,8 @@ def test_settings_load_defaults_and_mask_file_credentials() -> None:
         ("GRAFANA_URL", "ftp://grafana/path"),
         ("CANARY_TIMEOUT_SECONDS", "0"),
         ("MESSAGE_TEMPLATE", ""),
+        ("REMINDER_INTERVAL", "-1m"),
+        ("REMINDER_INTERVAL", "infinite"),
     ],
 )
 def test_settings_reject_invalid_process_configuration(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
@@ -63,6 +73,15 @@ def test_settings_reject_invalid_process_configuration(monkeypatch: pytest.Monke
 
     with pytest.raises(ValueError, match=name):
         Settings()
+
+
+@pytest.mark.parametrize(("value", "seconds"), [("0s", 0), ("5m", 300), ("1.5h", 5400)])
+def test_reminder_interval_controls_repeats(monkeypatch: pytest.MonkeyPatch, value: str, seconds: float) -> None:
+    """Accept a disabled interval or a finite duration for repeated notifications."""
+
+    monkeypatch.setenv("REMINDER_INTERVAL", value)
+
+    assert Settings().reminder_interval == seconds
 
 
 def test_settings_require_existing_nonempty_secret_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ services:
       CHAT_ID_FILE: /run/secrets/chat_id
       GRAFANA_TOKEN_FILE: /run/secrets/grafana_token
       GRAFANA_URL: ${GRAFANA_URL:?Set GRAFANA_URL to the address reachable from this container}
+      REMINDER_INTERVAL: ${REMINDER_INTERVAL:-0s}
       CANARY_ENABLED: ${CANARY_ENABLED:-false}
       CANARY_TIMEOUT_SECONDS: "180"
       RETENTION_PERIOD: 30d

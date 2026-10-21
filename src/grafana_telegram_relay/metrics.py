@@ -52,3 +52,4 @@ CANARY_TIMEOUT = Gauge("telegram_bot_canary_timeout_seconds", "Configured canary
 
 ACKNOWLEDGEMENTS = Counter("telegram_bot_acknowledgements_total", "Incident acknowledgement callbacks", ["result"])
 CALLBACK_FAILURES = Counter("telegram_bot_callback_failures_total", "Failed Telegram polls or callback answers")
+REMINDERS = Counter("telegram_bot_reminders_total", "Reminder copy and deletion attempts", ["action", "result"])

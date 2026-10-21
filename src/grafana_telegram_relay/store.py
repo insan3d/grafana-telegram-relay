@@ -3,13 +3,14 @@ Persist incident delivery, retry scheduling, and watchdog state in SQLite.
 
 A single connection and lock serialize writes. Public methods return typed
 snapshots so database-driver values cannot escape into application logic.
+Tracked reminder IDs outlive pruned incident history until cleanup is confirmed.
 """
 
 import asyncio
 import json
 import sqlite3
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 import aiosqlite
 
@@ -20,6 +21,7 @@ from .models import (
     AckResult,
     Alert,
     Incident,
+    ReminderTask,
     StoreMetrics,
     acknowledgement_token,
     canary_alert,
@@ -138,6 +140,16 @@ class Store:
                 incident_key TEXT PRIMARY KEY REFERENCES incidents(key) ON DELETE CASCADE,
                 message_id INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS reminder_schedule (
+                incident_key TEXT PRIMARY KEY REFERENCES incidents(key) ON DELETE CASCADE,
+                next_at REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS reminder_messages (
+                message_id INTEGER PRIMARY KEY, incident_key TEXT NOT NULL,
+                sent_at REAL NOT NULL, next_at REAL NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS reminder_messages_incident ON reminder_messages(incident_key);
             CREATE TABLE IF NOT EXISTS telegram_updates (
                 id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL DEFAULT 0
             );
@@ -313,8 +325,8 @@ class Store:
             async with self.db.execute(
                 "SELECT key,version,json_extract(payload,'$.status') AS status,ack_name FROM incidents "
                 "LEFT JOIN acknowledgements ON acknowledgements.incident_key=incidents.key "
-                "WHERE message_id=?",
-                (message_id,),
+                "WHERE message_id=? OR key=(SELECT incident_key FROM reminder_messages WHERE message_id=?)",
+                (message_id, message_id),
             ) as cursor:
                 row = await cursor.fetchone()
 
@@ -391,7 +403,7 @@ class Store:
             )
             await self.db.commit()
 
-    async def sent(self, row: Incident, message_id: int, *, photo: bool) -> None:
+    async def sent(self, row: Incident, message_id: int, *, photo: bool, reminder_at: float | None = None) -> None:
         """
         Acknowledge exactly the version sent by a delivery attempt.
 
@@ -399,6 +411,7 @@ class Store:
             row: Snapshot that was delivered.
             message_id: Telegram message identifier.
             photo: Whether the message currently contains a screenshot.
+            reminder_at: First reminder deadline when repeating is enabled.
         """
 
         async with self.lock:
@@ -406,6 +419,158 @@ class Store:
                 "UPDATE incidents SET delivered=?,message_id=?,photo=?,attempts=0,next_attempt=0 WHERE key=?",
                 (row["version"], message_id, int(photo), row["key"]),
             )
+
+            if reminder_at is not None:
+                await self.db.execute(
+                    "INSERT INTO reminder_schedule(incident_key,next_at) VALUES(?,?) "
+                    "ON CONFLICT(incident_key) DO NOTHING",
+                    (row["key"], reminder_at),
+                )
+
+            await self.db.commit()
+
+    async def reminder_task(self, now: float, interval: float = 0) -> ReminderTask | None:
+        """
+        Select cleanup before a due reminder while respecting Telegram's API pause.
+
+        Args:
+            now: Timestamp used for deadlines and day-old copy rotation.
+            interval: Repeat interval; zero permits only deletion of existing copies.
+
+        Returns:
+            One due copy or deletion, or None when there is no eligible work.
+        """
+
+        async with self.lock:
+            async with self.db.execute("SELECT pause_until FROM delivery WHERE id=1") as cursor:
+                if _number(_value(await _row(cursor), 0)) > now:
+                    return None
+
+            async with self.db.execute(
+                "SELECT reminder_messages.*,coalesce(incidents.payload,'{}') AS payload FROM reminder_messages "
+                "LEFT JOIN incidents ON incidents.key=reminder_messages.incident_key "
+                "LEFT JOIN acknowledgements ON acknowledgements.incident_key=reminder_messages.incident_key "
+                "WHERE reminder_messages.next_at<=? AND (incidents.key IS NULL OR ack_name IS NOT NULL "
+                "OR json_extract(payload,'$.status')='resolved' OR sent_at<=?) "
+                "ORDER BY reminder_messages.next_at,sent_at LIMIT 1",
+                (now, now - 86400),
+            ) as cursor:
+                row: object = await cursor.fetchone()
+
+            action: Literal["send", "delete"] = "delete"
+
+            if row is None and interval > 0:
+                await self.db.execute(
+                    "INSERT OR IGNORE INTO reminder_schedule(incident_key,next_at) "
+                    "SELECT key,? FROM incidents LEFT JOIN acknowledgements ON acknowledgements.incident_key=key "
+                    "WHERE message_id IS NOT NULL AND delivered=version AND ack_name IS NULL "
+                    "AND json_extract(payload,'$.status')='firing'",
+                    (now + interval,),
+                )
+                await self.db.commit()
+
+                async with self.db.execute(
+                    "SELECT reminder_schedule.incident_key,incidents.payload,incidents.message_id, "
+                    "reminder_schedule.attempts FROM reminder_schedule "
+                    "JOIN incidents ON incidents.key=reminder_schedule.incident_key "
+                    "LEFT JOIN acknowledgements ON acknowledgements.incident_key=incidents.key "
+                    "WHERE reminder_schedule.next_at<=? AND incidents.message_id IS NOT NULL "
+                    "AND delivered=version AND ack_name IS NULL AND json_extract(payload,'$.status')='firing' "
+                    "ORDER BY reminder_schedule.next_at LIMIT 1",
+                    (now,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+
+                action = "send"
+
+            if row is None:
+                return None
+
+            if not isinstance(row, sqlite3.Row):
+                msg = "unexpected SQLite row factory"
+                raise TypeError(msg)
+
+            return {
+                "action": action,
+                "key": TEXT.validate_python(_value(row, "incident_key")),
+                "payload": TEXT.validate_python(_value(row, "payload")),
+                "message_id": _integer(_value(row, "message_id")),
+                "attempts": _integer(_value(row, "attempts")),
+            }
+
+    async def reminder_sent(self, task: ReminderTask, message_id: int, *, now: float, next_at: float) -> None:
+        """
+        Track a confirmed copy even if its incident was acknowledged while sending.
+
+        Args:
+            task: Reminder snapshot selected before the Telegram call.
+            message_id: Identifier of the new duplicate.
+            now: Timestamp when Telegram confirmed the copy.
+            next_at: Deadline of the next repeat.
+        """
+
+        async with self.lock:
+            await self.db.execute(
+                "INSERT INTO reminder_messages(message_id,incident_key,sent_at) VALUES(?,?,?)",
+                (message_id, task["key"], now),
+            )
+            await self.db.execute(
+                "UPDATE reminder_schedule SET next_at=?,attempts=0 WHERE incident_key=?",
+                (next_at, task["key"]),
+            )
+            await self.db.commit()
+
+    async def reminder_deleted(self, message_id: int) -> None:
+        """Forget a duplicate only after deletion succeeded or Telegram reports it missing."""
+
+        async with self.lock:
+            await self.db.execute("DELETE FROM reminder_messages WHERE message_id=?", (message_id,))
+            await self.db.commit()
+
+    async def redeliver(self, key: str, now: float) -> None:
+        """
+        Queue replacement of a missing original while its incident remains unacknowledged.
+
+        Args:
+            key: Incident whose source message Telegram could not copy.
+            now: Timestamp when the missing message was detected.
+        """
+
+        async with self.lock:
+            await self.db.execute(
+                "UPDATE incidents SET version=version+1,updated=?,next_attempt=0,attempts=0 "
+                "WHERE key=? AND delivered=version AND json_extract(payload,'$.status')='firing' "
+                "AND NOT EXISTS(SELECT 1 FROM acknowledgements WHERE incident_key=incidents.key)",
+                (now, key),
+            )
+            await self.db.commit()
+
+    async def reminder_retry(self, task: ReminderTask, when: float, *, global_pause: bool = False) -> None:
+        """
+        Retain failed reminder work and optionally pause all outgoing API operations.
+
+        Args:
+            task: Copy or deletion that failed.
+            when: Earliest retry timestamp.
+            global_pause: Whether Telegram rate limiting requires a shared pause.
+        """
+
+        async with self.lock:
+            if task["action"] == "send":
+                await self.db.execute(
+                    "UPDATE reminder_schedule SET next_at=?,attempts=attempts+1 WHERE incident_key=?",
+                    (when, task["key"]),
+                )
+
+            else:
+                await self.db.execute(
+                    "UPDATE reminder_messages SET next_at=?,attempts=attempts+1 WHERE message_id=?",
+                    (when, task["message_id"]),
+                )
+
+            if global_pause:
+                await self.db.execute("UPDATE delivery SET pause_until=? WHERE id=1", (when,))
+
             await self.db.commit()
 
     async def retry(self, row: Incident, when: float, *, global_pause: bool = False) -> None:

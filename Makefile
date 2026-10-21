@@ -6,8 +6,10 @@ export PATH := $(HOME)/.local/bin:$(PATH)
 
 UV ?= uv
 IMAGE ?= grafana-telegram-relay:local
+REPOSITORY ?= apozlevich/grafana-telegram-relay
+VERSION = $(shell $(UV) version --short)
 
-.PHONY: all help setup hooks lint format test coverage check build image up down clean
+.PHONY: all help setup hooks lint format test coverage check build image publish up down clean
 
 all: check build
 
@@ -43,7 +45,12 @@ build: ## Build and validate wheel and sdist
 	$(UV) run --locked twine check --strict dist/*
 
 image: ## Build the runtime Docker image
-	docker build --tag $(IMAGE) .
+	docker build --label org.opencontainers.image.version=$(VERSION) --tag $(IMAGE) .
+
+publish: check build ## Build and push the project version and latest tags
+	docker build --label org.opencontainers.image.version=$(VERSION) --tag $(REPOSITORY):$(VERSION) --tag $(REPOSITORY):latest .
+	docker push $(REPOSITORY):$(VERSION)
+	docker push $(REPOSITORY):latest
 
 up: ## Build and start the standalone service
 	docker compose up --detach --build --wait

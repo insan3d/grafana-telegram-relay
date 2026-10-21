@@ -6,6 +6,7 @@ rendering remains pending. Screenshot and template failures retain text delivery
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import timedelta
 from time import monotonic
 
@@ -23,10 +24,19 @@ from .metrics import (
     TEMPLATE_FAILURES,
 )
 from .models import Alert, Incident
+from .reminders import Reminders
 lazy from .interfaces import ChatId, Render, TelegramClient
 lazy from .store import Store
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DeliveryOptions:
+    """Configure incident formatting and the optional repeat interval."""
+
+    templates: MessageTemplates | None = None
+    reminder_interval: float = 0
 
 
 class Delivery:
@@ -38,7 +48,7 @@ class Delivery:
         telegram: TelegramClient,
         chat_id: ChatId,
         render: Render | None,
-        templates: MessageTemplates | None = None,
+        options: DeliveryOptions | None = None,
     ) -> None:
         """
         Initialize the incident delivery worker.
@@ -48,14 +58,16 @@ class Delivery:
             telegram: Asynchronous Telegram API transport.
             chat_id: Target group or chat identifier.
             render: Optional screenshot provider.
-            templates: Message formatter; the standard formatter is used by default.
+            options: Message formatter and repeat interval; defaults disable reminders.
         """
 
         self.store = store
         self.telegram = telegram
         self.chat_id = chat_id
         self.render = render
-        self.templates = templates or MessageTemplates()
+        options = options or DeliveryOptions()
+        self.templates = options.templates or MessageTemplates()
+        self.reminders = Reminders(store, telegram, chat_id, options.reminder_interval)
 
     async def once(self, now: float) -> bool:
         """
@@ -69,10 +81,14 @@ class Delivery:
         """
 
         started = monotonic()
+
+        if await self.reminders.once(now, send=False):
+            return True
+
         row = await self.store.pending(now)
 
         if row is None:
-            return False
+            return await self.reminders.once(now)
 
         message_id, photo = row["message_id"], bool(row["photo"])
         result = "failure"
@@ -90,7 +106,12 @@ class Delivery:
             if item.status == "resolved" and row["message_id"] is not None:
                 await self._resolution_reply(item, row, message_id, photo=photo)
 
-            await self.store.sent(row, message_id, photo=photo)
+            reminder_at = (
+                now + monotonic() - started + self.reminders.interval
+                if self.reminders.interval > 0 and item.status == "firing" and row["acknowledgement"] is None
+                else None
+            )
+            await self.store.sent(row, message_id, photo=photo, reminder_at=reminder_at)
             result = "success"
             DELIVERIES.labels("success").inc()
             log.info(

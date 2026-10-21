@@ -178,6 +178,16 @@ class StoreMetrics(TypedDict):
     last_seen: float
 
 
+class ReminderTask(TypedDict):
+    """Carry one due copy or deletion with its durable retry state."""
+
+    action: Literal["send", "delete"]
+    key: str
+    payload: str
+    message_id: int
+    attempts: int
+
+
 def canary_alert(start: float, status: AlertStatus = "firing", end: float | None = None) -> Alert:
     """
     Construct an internal watchdog update using the normal alert schema.

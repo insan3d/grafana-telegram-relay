@@ -11,9 +11,11 @@ import json
 import sqlite3
 from pathlib import Path
 from typing import Literal, Self
+from uuid import uuid4
 
 import aiosqlite
 
+from .grouping import notification
 from .models import (
     ALERTS,
     TEXT,
@@ -23,6 +25,7 @@ from .models import (
     Incident,
     ReminderTask,
     StoreMetrics,
+    Webhook,
     acknowledgement_token,
     canary_alert,
 )
@@ -163,6 +166,28 @@ class Store:
             INSERT OR IGNORE INTO delivery(id) VALUES(1);
         """)
 
+        for table, column in (
+            ("incidents", "generation"),
+            ("incidents", "message_generation"),
+            ("reminder_messages", "generation"),
+        ):
+            async with db.execute(f"PRAGMA table_info({table})") as cursor:
+                columns = {TEXT.validate_python(_value(row, "name")) for row in await cursor.fetchall()}
+
+            if column not in columns:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS group_heads (
+                group_id TEXT PRIMARY KEY, incident_key TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS group_members (
+                group_id TEXT NOT NULL, member_key TEXT NOT NULL,
+                incident_key TEXT NOT NULL REFERENCES incidents(key) ON DELETE CASCADE,
+                payload TEXT NOT NULL, PRIMARY KEY(group_id,member_key)
+            );
+            CREATE INDEX IF NOT EXISTS group_members_incident ON group_members(incident_key);
+        """)
         await db.execute("INSERT OR IGNORE INTO canary(id,last_seen) VALUES(1,?)", (now,))
         await db.commit()
 
@@ -247,13 +272,101 @@ class Store:
             ValueError: A batch entry has invalid values; no entries are written.
         """
 
-        normalized = ALERTS.validate_python(items)
+        webhook = items if isinstance(items, Webhook) else Webhook(alerts=ALERTS.validate_python(items))
 
         async with self.lock:
-            for item in normalized:
-                await self._upsert(item.key, item, now)
+            try:
+                if webhook.group_key:
+                    await self._ingest_group(webhook, now)
 
-            await self.db.commit()
+                else:
+                    for item in webhook.alerts:
+                        await self._upsert(item.key, item, now)
+
+                await self.db.commit()
+
+            except BaseException:
+                await self.db.rollback()
+                raise
+
+    async def _ingest_group(self, webhook: Webhook, now: float) -> None:
+        """Atomically route explicit member episodes and rebuild affected group snapshots."""
+
+        identity = webhook.group_identity
+
+        async with self.db.execute(
+            "SELECT incident_key FROM group_heads JOIN incidents ON key=incident_key "
+            "WHERE group_id=? AND json_extract(payload,'$.status')='firing'",
+            (identity,),
+        ) as cursor:
+            head = await cursor.fetchone()
+
+        current = TEXT.validate_python(_value(head, 0)) if head is not None else None
+        changed: dict[str, bool] = {}
+
+        for item in sorted(webhook.alerts, key=lambda item: item.status != "resolved"):
+            async with self.db.execute("SELECT key FROM incidents WHERE key=?", (item.key,)) as cursor:
+                legacy = await cursor.fetchone()
+
+            if legacy is not None:
+                await self._upsert(item.key, item, now)
+                continue
+
+            async with self.db.execute(
+                "SELECT incident_key,payload FROM group_members WHERE group_id=? AND member_key=?",
+                (identity, item.key),
+            ) as cursor:
+                previous = await cursor.fetchone()
+
+            if previous is not None:
+                old = Alert.model_validate_json(TEXT.validate_python(_value(previous, "payload")))
+
+                if old.status == "resolved" or old == item:
+                    continue
+
+                key = TEXT.validate_python(_value(previous, "incident_key"))
+                new_failure = False
+
+            else:
+                if current is None:
+                    current = "group:" + identity + ":" + uuid4().hex
+                    await self._upsert(current, notification([item], webhook), now)
+                    await self.db.execute(
+                        "INSERT INTO group_heads VALUES(?,?) ON CONFLICT(group_id) "
+                        "DO UPDATE SET incident_key=excluded.incident_key",
+                        (identity, current),
+                    )
+
+                key = current
+                new_failure = item.status == "firing"
+
+            await self.db.execute(
+                "INSERT INTO group_members VALUES(?,?,?,?) ON CONFLICT(group_id,member_key) "
+                "DO UPDATE SET payload=excluded.payload",
+                (identity, item.key, key, item.model_dump_json(by_alias=True)),
+            )
+            changed[key] = changed.get(key, False) or new_failure
+
+        for key, new_failure in changed.items():
+            async with self.db.execute("SELECT payload FROM group_members WHERE incident_key=?", (key,)) as cursor:
+                members = [
+                    Alert.model_validate_json(TEXT.validate_python(_value(row, 0))) for row in await cursor.fetchall()
+                ]
+
+            aggregate = notification(members, webhook)
+
+            # New group snapshots can start resolved while a mixed batch is assembled.
+            await self.db.execute(
+                "UPDATE incidents SET payload=?,version=version+1,updated=?,next_attempt=0,attempts=0 WHERE key=?",
+                (aggregate.model_dump_json(by_alias=True), now, key),
+            )
+
+            if new_failure:
+                await self.db.execute("DELETE FROM acknowledgements WHERE incident_key=?", (key,))
+                await self.db.execute("UPDATE incidents SET generation=generation+1 WHERE key=?", (key,))
+                await self.db.execute(
+                    "UPDATE reminder_schedule SET next_at=?,attempts=0 WHERE incident_key=?", (now, key)
+                )
 
     async def pending(self, now: float) -> Incident | None:
         """
@@ -304,6 +417,7 @@ class Store:
             "next_attempt": _number(_value(row, "next_attempt")),
             "updated": _number(_value(row, "updated")),
             "acknowledgement": _acknowledgement(row),
+            "generation": _integer(_value(row, "generation")),
         }
 
     async def acknowledge(self, message_id: int, token: str, *, user_id: int, name: str, now: float) -> AckResult:
@@ -323,14 +437,20 @@ class Store:
 
         async with self.lock:
             async with self.db.execute(
-                "SELECT key,version,json_extract(payload,'$.status') AS status,ack_name FROM incidents "
+                "SELECT key,version,generation,message_generation,json_extract(payload,'$.status') AS status,ack_name "
+                "FROM incidents "
                 "LEFT JOIN acknowledgements ON acknowledgements.incident_key=incidents.key "
                 "WHERE message_id=? OR key=(SELECT incident_key FROM reminder_messages WHERE message_id=?)",
                 (message_id, message_id),
             ) as cursor:
                 row = await cursor.fetchone()
 
-            if row is None or acknowledgement_token(TEXT.validate_python(_value(row, "key"))) != token:
+            if (
+                row is None
+                or acknowledgement_token(TEXT.validate_python(_value(row, "key")), _integer(_value(row, "generation")))
+                != token
+                or _value(row, "generation") != _value(row, "message_generation")
+            ):
                 return "not_found"
 
             if _value(row, "status") != "firing":
@@ -380,6 +500,13 @@ class Store:
         """
 
         async with self.lock:
+            if row["photo"] and not photo and row["message_id"] is not None:
+                await self.db.execute(
+                    "INSERT OR IGNORE INTO reminder_messages(message_id,incident_key,sent_at,generation) "
+                    "VALUES(?,?,?,-1)",
+                    (row["message_id"], row["key"], row["updated"]),
+                )
+
             await self.db.execute(
                 "UPDATE incidents SET message_id=?,photo=? WHERE key=?",
                 (message_id, int(photo), row["key"]),
@@ -416,8 +543,9 @@ class Store:
 
         async with self.lock:
             await self.db.execute(
-                "UPDATE incidents SET delivered=?,message_id=?,photo=?,attempts=0,next_attempt=0 WHERE key=?",
-                (row["version"], message_id, int(photo), row["key"]),
+                "UPDATE incidents SET delivered=?,message_id=?,photo=?,message_generation=?,"
+                "attempts=0,next_attempt=0 WHERE key=?",
+                (row["version"], message_id, int(photo), row["generation"], row["key"]),
             )
 
             if reminder_at is not None:
@@ -451,7 +579,8 @@ class Store:
                 "LEFT JOIN incidents ON incidents.key=reminder_messages.incident_key "
                 "LEFT JOIN acknowledgements ON acknowledgements.incident_key=reminder_messages.incident_key "
                 "WHERE reminder_messages.next_at<=? AND (incidents.key IS NULL OR ack_name IS NOT NULL "
-                "OR json_extract(payload,'$.status')='resolved' OR sent_at<=?) "
+                "OR json_extract(payload,'$.status')='resolved' "
+                "OR reminder_messages.generation!=incidents.generation OR sent_at<=?) "
                 "ORDER BY reminder_messages.next_at,sent_at LIMIT 1",
                 (now, now - 86400),
             ) as cursor:
@@ -470,7 +599,8 @@ class Store:
                 await self.db.commit()
 
                 async with self.db.execute(
-                    "SELECT reminder_schedule.incident_key,incidents.payload,incidents.message_id, "
+                    "SELECT reminder_schedule.incident_key,incidents.payload,incidents.message_id,"
+                    "incidents.generation, "
                     "reminder_schedule.attempts FROM reminder_schedule "
                     "JOIN incidents ON incidents.key=reminder_schedule.incident_key "
                     "LEFT JOIN acknowledgements ON acknowledgements.incident_key=incidents.key "
@@ -492,6 +622,7 @@ class Store:
 
             return {
                 "action": action,
+                "generation": _integer(_value(row, "generation")),
                 "key": TEXT.validate_python(_value(row, "incident_key")),
                 "payload": TEXT.validate_python(_value(row, "payload")),
                 "message_id": _integer(_value(row, "message_id")),
@@ -511,8 +642,8 @@ class Store:
 
         async with self.lock:
             await self.db.execute(
-                "INSERT INTO reminder_messages(message_id,incident_key,sent_at) VALUES(?,?,?)",
-                (message_id, task["key"], now),
+                "INSERT INTO reminder_messages(message_id,incident_key,sent_at,generation) VALUES(?,?,?,?)",
+                (message_id, task["key"], now, task["generation"]),
             )
             await self.db.execute(
                 "UPDATE reminder_schedule SET next_at=?,attempts=0 WHERE incident_key=?",
@@ -679,4 +810,5 @@ class Store:
                 "AND json_extract(payload,'$.status')='resolved'",
                 (before,),
             )
+            await self.db.execute("DELETE FROM group_heads WHERE incident_key NOT IN (SELECT key FROM incidents)")
             await self.db.commit()

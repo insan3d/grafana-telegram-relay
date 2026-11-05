@@ -11,9 +11,11 @@ from aiohttp.test_utils import TestClient, TestServer
 from prometheus_client.parser import text_string_to_metric_families
 
 from grafana_telegram_relay.app import TASKS, create_app
+from grafana_telegram_relay.delivery import Delivery
 from grafana_telegram_relay.models import Alert
 from grafana_telegram_relay.store import Store
 from tests.factories import alert, alert_payload
+from tests.fakes import Telegram
 lazy from grafana_telegram_relay.models import AlertStatus
 
 type MetricKey = tuple[str, tuple[tuple[str, str], ...]]
@@ -39,6 +41,29 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close()
         await self.store.close()
         self.directory.cleanup()
+
+    async def test_grouped_webhook_delivers_one_message_with_every_host(self) -> None:
+        """Keep Grafana's arbitrary alert grouping through persistence and delivery."""
+
+        members = [
+            alert_payload(fingerprint=host, labels={"alertname": name, "instance": host})
+            for host, name in (("host-a", "CPU"), ("host-b", "Memory"), ("host-c", "Disk"))
+        ]
+        response = await self.client.post(
+            "/webhook/grafana",
+            json={"receiver": "telegram", "groupKey": "opaque-group", "alerts": members},
+        )
+        assert response.status == 202
+        telegram = Telegram()
+        delivery = Delivery(self.store, telegram, "-123", None)
+
+        while await delivery.once(now=time.time()):
+            pass
+
+        assert len(telegram.messages) == 1
+        text = telegram.messages[1]["text"]
+        assert all(host in text for host in ("host-a", "host-b", "host-c"))
+        assert all(name in text for name in ("CPU", "Memory", "Disk"))
 
     async def samples(self) -> dict[MetricKey, float]:
         """Collect current Prometheus sample values from the HTTP endpoint."""

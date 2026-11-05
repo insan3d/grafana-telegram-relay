@@ -80,7 +80,8 @@ The application listens on `0.0.0.0:8080`; Compose restricts the published host 
 
 Create a webhook contact point pointing at `/webhook/grafana` using an address Grafana can reach. Set **Max Alerts = 0**
 and keep resolved notifications enabled. Route your alert rules to this contact point through notification policies.
-Grafana may group a webhook, but the relay creates one Telegram message per alert's `fingerprint + startsAt`.
+The relay follows Grafana notification grouping by default: one Telegram message per group episode, with the affected
+alerts listed together. Configure `group_by` in Grafana notification policies to choose the grouping.
 
 The [Grafana provisioning example](examples/grafana-alerting.yaml) defines the ordinary contact point and notification
 policy. Set its webhook URL to the relay's reachable address. `http://relay:8080` works when Grafana and the relay share
@@ -117,7 +118,8 @@ Associate a real alert rule with a dashboard/panel to receive screenshots. The r
 
 ## 4. Verify delivery, ACK and recovery
 
-The example requires a POSIX shell, `curl` and `date`. It posts a normal webhook and sends a real group message:
+The example requires a POSIX shell, `curl` and `date`. It posts a grouped webhook and sends one real Telegram message
+listing `demo-a` and `demo-b`:
 
 ```bash
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -125,7 +127,7 @@ started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ```
 
 Press **Acknowledge**. The message receives `Acknowledged by @username`, or the user's full name, and the ACK button
-disappears. The first acknowledger is retained through updates, recovery and restarts. Then:
+disappears. Value changes, partial recovery and restarts preserve ACK. Then:
 
 ```bash
 ./examples/notify.sh resolved "$started_at"
@@ -179,18 +181,42 @@ the message ID, or an ambiguous network timeout, can cause a duplicate. The cana
 chain; an external check is needed to detect failure of the relay, its host or Telegram itself. The same send/commit
 limitation applies to recovery replies and reminders.
 
+## Grouped incidents
+
+The relay uses the webhook's `groupKey` and its source/receiver identity to keep unrelated groups separate. Each member
+retains its own `fingerprint + startsAt` identity. Changes update the group's original message; partial recovery marks
+the recovered members while the group remains active. Only full recovery sends the short recovery reply. A later new
+incident in a closed group gets a new message. Missing members are not treated as recovered without an explicit
+resolved update. Truncated webhooks are rejected; keep **Max Alerts = 0** and resolved notifications enabled.
+
+A group with one member retains the individual alert's formatting and screenshot support. Groups with multiple members
+use text so the message can show their identities and statuses together. Grouping is controlled by Grafana; no relay
+setting is needed. Webhooks without a `groupKey` continue to create individual incidents.
+
+If a single-member photo message grows into a multi-member group, the relay replaces it with a text message and queues
+the retired photo for deletion. The replacement becomes the group's original message; old controls cannot acknowledge
+the expanded group. Deletion remains subject to Telegram's limits described below.
+
+Keep the existing SQLite database when upgrading. Schema changes preserve message IDs, acknowledgements and pending
+reminder cleanup. Already stored individual alert episodes finish as individual incidents because their original
+webhooks' group identity was not saved. New episodes use Grafana grouping; upgrading does not merge old Telegram
+messages or discard their state.
+
 ## Repeated notifications until ACK
 
-Set `REMINDER_INTERVAL=5m` to send a new copy every five minutes while an incident is firing and unacknowledged.
+Set `REMINDER_INTERVAL=5m` to send a new copy every five minutes while a group is firing and unacknowledged.
 The default `0s` disables repeats. The supplied Compose file forwards this variable; recreate the container after
 changing it. Repeats do not require another Grafana webhook and preserve the original text, mentions and screenshot,
 with an **Acknowledge** button on every copy. Screenshots are copied without rendering the panel again.
 
-Acknowledging the original or any copy acknowledges the whole incident. The relay deletes all tracked copies and
-updates the original with the operator's name. Recovery also stops repeats and removes copies, retaining the original
-and its recovery reply. Schedules, copy IDs and deletion retries survive restarts; cleanup continues when repeats are
-disabled and after incident history expires. After downtime the relay sends one due reminder, without replaying every
-missed interval. `telegram_bot_reminders_total{action="send|delete",result="success|failure"}` records these operations.
+Acknowledging the current original or a current reminder copy acknowledges the whole group. Value changes and partial
+recovery preserve ACK. A newly firing member clears ACK so the additional failure receives attention; controls from an
+older group generation cannot acknowledge the new member. The relay deletes outdated copies and updates the original.
+ACK adds the operator's name to the original message. Full recovery also stops repeats and removes copies, retaining the
+original and its recovery reply. Schedules, copy IDs and deletion retries survive restarts; cleanup continues when
+repeats are disabled and after incident history expires. After downtime the relay sends one due reminder, without
+replaying every missed interval. `telegram_bot_reminders_total{action="send|delete",result="success|failure"}` records
+these operations.
 
 [Telegram limits message deletion to 48 hours](https://core.telegram.org/bots/api#deletemessage), so the relay removes
 day-old copies even before ACK while continuing to send new reminders. A bot outage longer than 48 hours or missing
@@ -206,6 +232,8 @@ Packaged templates also include `compact.html.j2` and plain `default.txt.j2`. Mo
 `/etc/grafana-telegram-relay/templates` to override or add templates. Files, includes and macros are reread on each
 changed alert; a file edit alone does not trigger delivery. Select a template globally with `MESSAGE_TEMPLATE` or per
 rule with annotation `telegram_template=compact.html.j2`.
+For a multi-member group, an annotation selects a template only when every member specifies the same value; otherwise
+the global template is used.
 
 Add a `mention` label to a Grafana alert rule to tag Telegram users without a custom template:
 
@@ -229,6 +257,22 @@ label list; HTML in its value is escaped. Custom templates can display it with `
 Context: `alert`, `status`, `labels`, `annotations`, `values`, `starts_at`, `ends_at`, `duration_seconds`, `now`,
 `dashboard_url`, `panel_url`, `generator_url`, `silence_url`, `fingerprint`, `acknowledgement`. Acknowledgement is
 `None` or an object with `name`, `user_id`, `at` and internal `version`; the ACK footer is appended automatically.
+
+Group context also provides `grouped`, `alerts`, `member_count`, `firing_count`, `resolved_count`, `group_key`,
+`group_labels`, `receiver`, `external_url` and `org_id`. `alerts` contains the full member snapshots with Grafana field
+names, including each member's labels, annotations, status and links. For multi-member groups, top-level `labels` and
+`annotations` contain shared metadata, with a fallback group name and combined mentions. Do not use top-level links
+as a representative of an arbitrary member; use that member's links instead.
+
+```jinja2
+{{ labels.alertname }} · {{ firing_count }} firing
+{% for member in alerts %}
+{{ member.status|upper }} · {{ member.labels.get('instance', member.labels.alertname) }}
+{% endfor %}
+```
+
+The built-in templates use bounded `displayed_members` summaries and report `omitted_count` when the full list cannot
+fit. Custom templates can iterate the complete `alerts` list, but must respect Telegram's message limits.
 
 `*.html.j2` enables Telegram HTML with automatic escaping throughout includes/macros; other templates are plain text.
 Undefined variables, broken/missing templates and invalid HTML fall back to plain text. Limits are 4096 UTF-16 units for
@@ -273,10 +317,10 @@ make image
 includes tracked and untracked files. Git hooks run linters at commit time and offline tests before push. No hook posts
 to Telegram. `make clean` removes generated artifacts and keeps secrets and persistent data.
 
-Release versions follow `MAJOR.MINOR.PATCH`; the current release is `0.2.1`. Update the version with
+Release versions follow `MAJOR.MINOR.PATCH`; `pyproject.toml` is the version source. Update the version with
 `uv version --bump patch` and keep the Dockerfile's default OCI version label in sync. `make publish` runs checks and
 builds the
-distributions, then builds and pushes `apozlevich/grafana-telegram-relay:0.2.1` and `:latest` using the version from
+distributions, then builds and pushes `apozlevich/grafana-telegram-relay:<version>` and `:latest` using the version from
 `pyproject.toml`. The image's OCI version label uses the same value. Override `REPOSITORY` for another registry.
 Release tags contain versions; `latest` follows the most recently published release.
 

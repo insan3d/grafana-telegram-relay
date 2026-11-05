@@ -126,7 +126,7 @@ def create_app(store: Store, canary_timeout: float = 180, *, canary_enabled: boo
                 await store.heartbeat(time.time())
 
             else:
-                await store.ingest(body.alerts, time.time())
+                await store.ingest(body, time.time())
 
         except ValueError, TypeError, AttributeError:
             raise web.HTTPBadRequest(text="Invalid Grafana webhook payload") from None

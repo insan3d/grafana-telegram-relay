@@ -13,7 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, RetryAfter
 
 from .metrics import REMINDERS
-from .models import Alert, acknowledgement_token
+from .models import acknowledgement_token
 lazy from .interfaces import ChatId, TelegramClient
 lazy from .models import ReminderTask
 lazy from .store import Store
@@ -85,8 +85,7 @@ class Reminders:
             await self.store.reminder_deleted(task["message_id"])
 
         else:
-            item = Alert.model_validate_json(task["payload"])
-            data = "ack:" + acknowledgement_token(item.key)
+            data = "ack:" + acknowledgement_token(task["key"], task["generation"])
             markup = InlineKeyboardMarkup([[InlineKeyboardButton("Acknowledge", callback_data=data)]])
             started = monotonic()
             message = await self.telegram.copy_message(

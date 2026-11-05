@@ -1,3 +1,42 @@
+{% if member_count > 1 %}
+<b>{{ '🔴 FIRING' if status == 'firing' else '🟢 RESOLVED' }} · {{ group_title }} · {{ member_count }} alerts</b>
+{% if group_mention %}
+{{ group_mention }}
+{% endif %}
+Firing: {{ firing_count }} · Resolved: {{ resolved_count }}
+{% if group_summary %}
+
+<b>{{ group_summary }}</b>
+{% endif %}
+{% if group_description %}
+
+{{ group_description }}
+{% endif %}
+{% for member in displayed_members %}
+
+<b>{{ member.status }}</b> · <code>{{ member.identity }}</code>
+{% if member.episode %}
+<code>{{ member.episode }}</code>
+{% endif %}
+{% if member.summary %}
+<b>{{ member.summary }}</b>
+{% endif %}
+{% if member.description %}
+
+{{ member.description }}
+{% endif %}
+{% if member['values'] %}
+Values: <code>{{ member['values'] }}</code>
+{% endif %}
+{% for label, url in member.links.items() %}
+<a href="{{ url }}">{{ label }}</a>
+{% endfor %}
+{% endfor %}
+{% if omitted_count %}
+
+… {{ omitted_count }} members omitted
+{% endif %}
+{% else %}
 <b>{{ '🔴 FIRING' if status == 'firing' else '🟢 RESOLVED' }} · {{ labels.alertname }}</b>
 {% if labels.get('mention') %}
 {{ labels.mention }}
@@ -25,4 +64,5 @@ Resolved: <code>{{ ends_at }}</code>
 
 Values:
 <pre>{{ values|tojson }}</pre>
+{% endif %}
 {% endif %}

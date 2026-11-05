@@ -1,3 +1,42 @@
+{% if member_count > 1 %}
+{{ '🔴 FIRING' if status == 'firing' else '🟢 RESOLVED' }} · {{ group_title }} · {{ member_count }} alerts
+{% if group_mention %}
+{{ group_mention }}
+{% endif %}
+Firing: {{ firing_count }} · Resolved: {{ resolved_count }}
+{% if group_summary %}
+
+{{ group_summary }}
+{% endif %}
+{% if group_description %}
+
+{{ group_description }}
+{% endif %}
+{% for member in displayed_members %}
+
+{{ member.status }} · {{ member.identity }}
+{% if member.episode %}
+{{ member.episode }}
+{% endif %}
+{% if member.summary %}
+{{ member.summary }}
+{% endif %}
+{% if member.description %}
+
+{{ member.description }}
+{% endif %}
+{% if member['values'] %}
+Values: {{ member['values'] }}
+{% endif %}
+{% for label, url in member.links.items() %}
+{{ label }}: {{ url }}
+{% endfor %}
+{% endfor %}
+{% if omitted_count %}
+
+… {{ omitted_count }} members omitted
+{% endif %}
+{% else %}
 {{ '🔴 FIRING' if status == 'firing' else '🟢 RESOLVED' }} · {{ labels.alertname }}
 {% if labels.get('mention') %}
 {{ labels.mention }}
@@ -24,4 +63,5 @@ Resolved: {{ ends_at }}
 {% if values %}
 
 Values: {{ values|tojson }}
+{% endif %}
 {% endif %}

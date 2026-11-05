@@ -119,6 +119,21 @@ class Webhook(BaseModel):
 
     alerts: list[Alert] = Field(min_length=1)
     truncated_alerts: int = Field(default=0, alias="truncatedAlerts", ge=0, le=0)
+    group_key: str = Field(default="", alias="groupKey")
+    receiver: str = ""
+    external_url: str = Field(default="", alias="externalURL")
+    org_id: int | None = Field(default=None, alias="orgId")
+    group_labels: dict[str, str] = Field(default_factory=dict, alias="groupLabels")
+    common_labels: dict[str, str] = Field(default_factory=dict, alias="commonLabels")
+    common_annotations: dict[str, str] = Field(default_factory=dict, alias="commonAnnotations")
+
+    @property
+    def group_identity(self) -> str:
+        """Namespace Grafana's opaque group key by its declared source and receiver."""
+
+        return hashlib.sha256(
+            json.dumps([self.external_url, self.org_id, self.receiver, self.group_key]).encode()
+        ).hexdigest()
 
     def require_canary(self) -> None:
         """
@@ -138,10 +153,23 @@ class Webhook(BaseModel):
             raise ValueError(msg)
 
 
-def acknowledgement_token(key: str) -> str:
+class Notification(Alert):
+    """Carry the durable member snapshot and group metadata alongside alert fields."""
+
+    alerts: list[Alert] = Field(default_factory=list)
+    group_key: str = Field(default="", alias="groupKey")
+    receiver: str = ""
+    external_url: str = Field(default="", alias="externalURL")
+    org_id: int | None = Field(default=None, alias="orgId")
+    group_labels: dict[str, str] = Field(default_factory=dict, alias="groupLabels")
+
+
+def acknowledgement_token(key: str, generation: int = 0) -> str:
     """Derive a compact incident identifier that fits Telegram callback data."""
 
-    return hashlib.sha256(key.encode()).hexdigest()[:32]
+    identity = key if generation == 0 else f"{key}:attention:{generation}"
+
+    return hashlib.sha256(identity.encode()).hexdigest()[:32]
 
 
 class Acknowledgement(TypedDict):
@@ -167,6 +195,7 @@ class Incident(TypedDict):
     next_attempt: float
     updated: float
     acknowledgement: Acknowledgement | None
+    generation: int
 
 
 class StoreMetrics(TypedDict):
@@ -182,6 +211,7 @@ class ReminderTask(TypedDict):
     """Carry one due copy or deletion with its durable retry state."""
 
     action: Literal["send", "delete"]
+    generation: int
     key: str
     payload: str
     message_id: int

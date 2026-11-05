@@ -15,15 +15,24 @@ curl --fail-with-body --silent --show-error \
   --data-binary @- "${RELAY_URL:-http://127.0.0.1:8088}/webhook/grafana" <<EOF
 {
   "receiver": "telegram",
+  "orgId": 1,
   "status": "${status}",
   "groupKey": "example-relay-smoke",
   "groupLabels": {"alertname": "RelaySmokeTest"},
   "alerts": [{
     "status": "${status}",
-    "fingerprint": "relay-smoke-test",
+    "fingerprint": "relay-smoke-test-a",
     "startsAt": "${starts_at}",
     "endsAt": "${ends_at}",
-    "labels": {"alertname": "RelaySmokeTest", "instance": "demo", "severity": "test"},
+    "labels": {"alertname": "RelaySmokeTest", "instance": "demo-a", "severity": "test"},
+    "annotations": {"summary": "End-to-end relay smoke test"},
+    "values": {"A": 1}
+  }, {
+    "status": "${status}",
+    "fingerprint": "relay-smoke-test-b",
+    "startsAt": "${starts_at}",
+    "endsAt": "${ends_at}",
+    "labels": {"alertname": "RelaySmokeTest", "instance": "demo-b", "severity": "test"},
     "annotations": {"summary": "End-to-end relay smoke test"},
     "values": {"A": 1}
   }]

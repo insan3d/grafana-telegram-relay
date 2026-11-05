@@ -5,21 +5,25 @@ Text and HTML use separate environments so includes share the selected escaping
 mode. Length limits apply to decoded text without splitting UTF-16 characters.
 """
 
+import hashlib
 import json
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import override
+from typing import TypedDict, override
 lazy from collections.abc import Sequence
 
 from jinja2 import FileSystemLoader, StrictUndefined
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
+from .buttons import member_links
 from .metrics import TEMPLATE_FAILURES
+from .models import Notification
 lazy from .models import Acknowledgement, Alert, ParseMode
 
 log = logging.getLogger(__name__)
@@ -40,6 +44,27 @@ def clip(text: str, limit: int) -> str:
     """
 
     return text.encode("utf-16-le")[: limit * 2].decode("utf-16-le", errors="ignore")
+
+
+def abbreviate(text: str, limit: int) -> str:
+    """Mark truncated display data with an ellipsis within its UTF-16 budget."""
+
+    if limit < 1:
+        return ""
+
+    clipped = clip(text, limit)
+
+    return clipped if clipped == text else clip(text, limit - 1) + "…"
+
+
+def member_identity(member: Alert) -> str:
+    """Prioritize useful host labels and bound the identity actually shown to operators."""
+
+    keys = sorted(member.labels, key=lambda key: (key not in ("instance", "host", "hostname"), key))
+
+    return abbreviate(
+        "; ".join(f"{key}={abbreviate(member.labels[key], 160)}" for key in keys if key != "mention"), 350
+    )
 
 
 def fallback_text(item: Alert) -> str:
@@ -121,6 +146,88 @@ class Message:
     text: str
     parse_mode: ParseMode
     plain: str
+
+
+class MemberView(TypedDict):
+    """Expose bounded member details without clipping custom templates' raw alerts."""
+
+    status: str
+    identity: str
+    summary: str
+    description: str
+    fingerprint: str
+    starts_at: str
+    episode: str
+    values: str
+    links: dict[str, str]
+
+
+def member_view(aggregate: Alert, member: Alert, *, identity: str, duplicate_identity: bool) -> MemberView:
+    """Prepare bounded technical details and member prose that differs from shared prose."""
+
+    summary = abbreviate(member.annotations.get("summary", ""), 160)
+    description = abbreviate(member.annotations.get("description", ""), 160)
+
+    if member.annotations.get("summary") == aggregate.annotations.get("summary"):
+        summary = ""
+
+    if member.annotations.get("description") == aggregate.annotations.get("description"):
+        description = ""
+
+    fingerprint = clip(member.fingerprint, 80)
+
+    if fingerprint != member.fingerprint:
+        fingerprint += "…" + hashlib.sha256(member.key.encode()).hexdigest()[:12]
+
+    episode = f"{fingerprint} · {member.starts_at}" if duplicate_identity or len(member.labels) == 1 else ""
+
+    values = abbreviate(json.dumps(member.values, ensure_ascii=False, sort_keys=True), 256) if member.values else ""
+
+    return {
+        "status": member.status.upper(),
+        "identity": identity,
+        "summary": summary,
+        "description": description,
+        "fingerprint": fingerprint,
+        "starts_at": member.starts_at,
+        "episode": episode,
+        "values": values,
+        "links": member_links(member),
+    }
+
+
+def member_views(aggregate: Alert, members: list[Alert], budget: int) -> list[MemberView]:
+    """Select complete display rows while reserving header, mention and overflow space."""
+
+    identities = [member_identity(member) for member in members]
+    identity_counts = Counter(identities)
+    shown: list[MemberView] = []
+
+    for member, identity in zip(members, identities, strict=True):
+        view = member_view(aggregate, member, identity=identity, duplicate_identity=identity_counts[identity] > 1)
+        units = (
+            sum(
+                len(value.encode("utf-16-le")) // 2
+                for value in (
+                    view["identity"],
+                    view["summary"],
+                    view["description"],
+                    view["fingerprint"],
+                    view["starts_at"],
+                    view["values"],
+                )
+            )
+            + sum(len(url.encode("utf-16-le")) // 2 + len(label) for label, url in view["links"].items())
+            + 120
+        )
+
+        if units > budget:
+            break
+
+        shown.append(view)
+        budget -= units
+
+    return shown
 
 
 class MessageTemplates:
@@ -208,6 +315,33 @@ class MessageTemplates:
             "fingerprint": item.fingerprint,
         }
 
+        members = item.alerts if isinstance(item, Notification) and item.alerts else [item]
+
+        common_summary = clip(item.annotations.get("summary", ""), 320)
+        common_description = clip(item.annotations.get("description", ""), 512)
+        group_mention = clip(item.labels.get("mention", ""), 256)
+
+        shown = member_views(item, members, max(0, budget - 1500))
+
+        context.update(
+            group_summary=common_summary,
+            group_description=common_description,
+            group_title=clip(item.labels["alertname"], 160),
+            group_mention=group_mention,
+            alerts=[member.model_dump(by_alias=True) for member in members],
+            grouped=isinstance(item, Notification) and bool(item.group_key),
+            member_count=len(members),
+            firing_count=sum(member.status == "firing" for member in members),
+            resolved_count=sum(member.status == "resolved" for member in members),
+            group_key=item.group_key if isinstance(item, Notification) else "",
+            group_labels=item.group_labels if isinstance(item, Notification) else {},
+            receiver=item.receiver if isinstance(item, Notification) else "",
+            external_url=item.external_url if isinstance(item, Notification) else "",
+            org_id=item.org_id if isinstance(item, Notification) else None,
+            displayed_members=shown,
+            omitted_count=len(members) - len(shown),
+        )
+
         name = item.annotations.get("telegram_template", self.default)
 
         try:
@@ -217,7 +351,29 @@ class MessageTemplates:
         except Exception as error:  # noqa: BLE001
             TEMPLATE_FAILURES.inc()
             log.warning("Message template failed: %s; using default", type(error).__name__)
-            plain = clip(fallback_text(item), budget)
+
+            if len(members) > 1:
+                plain = f"{item.status.upper()} · {clip(item.labels['alertname'], 160)} · {len(members)} alerts\n"
+
+                if group_mention:
+                    plain += group_mention + "\n"
+
+                plain += f"{common_summary}\n{common_description}\n"
+                plain += "\n\n".join(
+                    f"{entry['status']} · {entry['identity']}\n{entry['fingerprint']} · {entry['starts_at']}\n"
+                    f"{entry['summary']}\n{entry['description']}"
+                    + (f"\nValues: {entry['values']}" if entry["values"] else "")
+                    for entry in shown
+                )
+
+                if len(shown) < len(members):
+                    plain += f"\n… {len(members) - len(shown)} members omitted"
+
+                plain = clip(plain, budget)
+
+            else:
+                plain = clip(fallback_text(item), budget)
+
             message = Message(plain, None, plain)
 
         suffix = escape(footer) if message.parse_mode == "HTML" else footer

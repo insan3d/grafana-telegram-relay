@@ -8,7 +8,7 @@ absolute HTTP URL is available; a panel URL opens the corresponding dashboard.
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from yarl import URL
 
-from .models import acknowledgement_token
+from .models import Notification, acknowledgement_token
 lazy from .models import Alert, Incident
 
 
@@ -65,6 +65,18 @@ def _dashboard_url(item: Alert) -> URL | None:
     return panel.without_query_params("viewPanel")
 
 
+def member_links(item: Alert) -> dict[str, str]:
+    """Expose valid per-member navigation without selecting a group representative."""
+
+    links = {
+        "Runbook": _http_url(item.annotations.get("runbook_url", "")),
+        "Grafana": _dashboard_url(item),
+        "Silence": _http_url(item.silence_url),
+    }
+
+    return {label: str(url) for label, url in links.items() if url is not None}
+
+
 def incident_keyboard(item: Alert, row: Incident) -> InlineKeyboardMarkup | None:
     """
     Create acknowledgement and navigation rows for an incident snapshot.
@@ -80,8 +92,11 @@ def incident_keyboard(item: Alert, row: Incident) -> InlineKeyboardMarkup | None
     rows: list[list[InlineKeyboardButton]] = []
 
     if item.status == "firing" and row["acknowledgement"] is None:
-        data = "ack:" + acknowledgement_token(row["key"])
+        data = "ack:" + acknowledgement_token(row["key"], row["generation"])
         rows.append([InlineKeyboardButton("Acknowledge", callback_data=data)])
+
+    if isinstance(item, Notification) and len(item.alerts) > 1:
+        return InlineKeyboardMarkup(rows) if rows else None
 
     links = (
         ("Runbook", _http_url(item.annotations.get("runbook_url", ""))),

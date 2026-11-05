@@ -23,7 +23,7 @@ from .metrics import (
     RENDER_FAILURES,
     TEMPLATE_FAILURES,
 )
-from .models import Alert, Incident
+from .models import Alert, Incident, Notification
 from .reminders import Reminders
 lazy from .interfaces import ChatId, Render, TelegramClient
 lazy from .store import Store
@@ -94,14 +94,24 @@ class Delivery:
         result = "failure"
 
         try:
-            item = Alert.model_validate_json(row["payload"])
-            image = await self._image(item, row)
+            item = Notification.model_validate_json(row["payload"])
+            multiple = len(item.alerts) > 1
+            image = await self._image(item, row) if not multiple else None
+            outgoing = row.copy()
+
+            if multiple and photo:
+                outgoing["message_id"] = None
+                outgoing["photo"] = 0
+
             message = self.templates(
-                item, limit=1024 if image or photo else 4096, acknowledgement=row["acknowledgement"]
+                item, limit=1024 if image or (photo and not multiple) else 4096, acknowledgement=row["acknowledgement"]
             )
             markup = incident_keyboard(item, row)
 
-            message_id, photo = await self._send_safe(row, image, message, markup)
+            message_id, photo = await self._send_safe(outgoing, image, message, markup)
+
+            if multiple and row["photo"] and message_id != row["message_id"]:
+                await self.store.save_message(row, message_id, photo=photo)
 
             if item.status == "resolved" and row["message_id"] is not None:
                 await self._resolution_reply(item, row, message_id, photo=photo)
